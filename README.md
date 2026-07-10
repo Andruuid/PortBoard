@@ -5,6 +5,13 @@ currently listening on your machine. It shows each app's port, package name,
 project folder, and Git branch, with actions to open the site or stop its verified
 process tree.
 
+The **Uncommitted** tab also scans Git repositories below `C:\Codex` and
+`C:\ClaudeCode`. It lists only projects with staged, modified, conflicted, or
+untracked work, ordered by the most recently changed local file. Ignored files are
+not included and the view never changes repository state. Each result includes an
+**Open** action that revalidates the repository against those two roots before
+opening its folder in Visual Studio Code.
+
 ## Start Portboard
 
 Double-click `start-portboard.cmd`, or run:

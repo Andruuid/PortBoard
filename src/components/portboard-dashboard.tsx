@@ -3,83 +3,65 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
-  Folder,
-  GitBranch,
+  GitCommitHorizontal,
   LoaderCircle,
-  Radio,
+  RadioTower,
   RefreshCw,
-  ServerOff,
   SquareTerminal,
 } from "lucide-react";
 
-import { AppActions } from "@/components/app-actions";
-import { RunningAppCard } from "@/components/running-app-card";
-import { RuntimeBadge } from "@/components/runtime-badge";
+import { RunningAppsView } from "@/components/running-apps-view";
+import { UncommittedProjectsView } from "@/components/uncommitted-projects-view";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import type { AppsResponse, RunningApp } from "@/lib/apps/types";
+import type {
+  GitScanWarning,
+  UncommittedProject,
+  UncommittedResponse,
+} from "@/lib/git/types";
 
-function DashboardSkeleton() {
-  return (
-    <Card className="border-border/80 bg-card/90 py-0">
-      <CardContent className="space-y-4 p-5">
-        {[0, 1, 2].map((row) => (
-          <div key={row} className="flex items-center gap-4 py-2">
-            <Skeleton className="h-7 w-16" />
-            <Skeleton className="h-5 w-40" />
-            <Skeleton className="hidden h-5 flex-1 md:block" />
-            <Skeleton className="h-8 w-32" />
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  );
-}
+type DashboardView = "running" | "uncommitted";
 
-function EmptyState() {
-  return (
-    <Card className="border-dashed border-border/80 bg-card/65">
-      <CardContent className="flex min-h-72 flex-col items-center justify-center px-6 text-center">
-        <div className="mb-5 rounded-2xl border border-border bg-muted/40 p-4">
-          <ServerOff className="size-7 text-muted-foreground" aria-hidden="true" />
-        </div>
-        <h2 className="text-lg font-medium">No Node apps are listening</h2>
-        <p className="mt-2 max-w-md text-sm leading-6 text-muted-foreground">
-          Start a Next.js, Node.js, or Bun server under this Windows account and it
-          will appear here automatically.
-        </p>
-      </CardContent>
-    </Card>
-  );
+const DEFAULT_GIT_ROOTS = ["C:\\Codex", "C:\\ClaudeCode"];
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 export function PortboardDashboard() {
-  const [apps, setApps] = useState<RunningApp[] | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
-  const [lastScan, setLastScan] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const requestRef = useRef<AbortController | null>(null);
+  const [activeView, setActiveView] = useState<DashboardView>("running");
 
-  const refresh = useCallback(async () => {
-    if (requestRef.current) {
+  const [apps, setApps] = useState<RunningApp[] | null>(null);
+  const [appWarnings, setAppWarnings] = useState<string[]>([]);
+  const [appsLastScan, setAppsLastScan] = useState<string | null>(null);
+  const [appsError, setAppsError] = useState<string | null>(null);
+  const [appsRefreshing, setAppsRefreshing] = useState(false);
+  const appsRequestRef = useRef<AbortController | null>(null);
+
+  const [projects, setProjects] = useState<UncommittedProject[] | null>(null);
+  const [gitWarnings, setGitWarnings] = useState<GitScanWarning[]>([]);
+  const [gitRoots, setGitRoots] = useState<string[]>(DEFAULT_GIT_ROOTS);
+  const [gitLastScan, setGitLastScan] = useState<string | null>(null);
+  const [gitError, setGitError] = useState<string | null>(null);
+  const [gitRefreshing, setGitRefreshing] = useState(false);
+  const gitRequestRef = useRef<AbortController | null>(null);
+
+  const refreshRunning = useCallback(async () => {
+    if (appsRequestRef.current) {
       return;
     }
 
     const controller = new AbortController();
-    requestRef.current = controller;
-    setRefreshing(true);
+    appsRequestRef.current = controller;
+    setAppsRefreshing(true);
 
     try {
       const response = await fetch("/api/apps", {
@@ -97,38 +79,88 @@ export function PortboardDashboard() {
           (left, right) => left.port - right.port || left.pid - right.pid,
         ),
       );
-      setWarnings(payload.warnings);
-      setLastScan(payload.scannedAt);
-      setError(null);
+      setAppWarnings(payload.warnings);
+      setAppsLastScan(payload.scannedAt);
+      setAppsError(null);
     } catch (requestError) {
-      if (requestError instanceof DOMException && requestError.name === "AbortError") {
-        return;
+      if (!isAbortError(requestError)) {
+        setAppsError(
+          requestError instanceof Error
+            ? requestError.message
+            : "The Windows process scan failed.",
+        );
       }
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "The Windows process scan failed.",
-      );
     } finally {
-      if (requestRef.current === controller) {
-        requestRef.current = null;
+      if (appsRequestRef.current === controller) {
+        appsRequestRef.current = null;
+        setAppsRefreshing(false);
       }
-      setRefreshing(false);
+    }
+  }, []);
+
+  const refreshUncommitted = useCallback(async () => {
+    if (gitRequestRef.current) {
+      return;
+    }
+
+    const controller = new AbortController();
+    gitRequestRef.current = controller;
+    setGitRefreshing(true);
+
+    try {
+      const response = await fetch("/api/uncommitted", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const payload = (await response.json()) as UncommittedResponse & {
+        message?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.message ?? "The Git repository scan failed.");
+      }
+
+      setProjects(
+        [...payload.projects].sort(
+          (left, right) =>
+            Date.parse(right.lastChangedAt) - Date.parse(left.lastChangedAt) ||
+            left.name.localeCompare(right.name),
+        ),
+      );
+      setGitWarnings(payload.warnings);
+      setGitRoots(payload.roots);
+      setGitLastScan(payload.scannedAt);
+      setGitError(null);
+    } catch (requestError) {
+      if (!isAbortError(requestError)) {
+        setGitError(
+          requestError instanceof Error
+            ? requestError.message
+            : "The Git repository scan failed.",
+        );
+      }
+    } finally {
+      if (gitRequestRef.current === controller) {
+        gitRequestRef.current = null;
+        setGitRefreshing(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    const initialRefresh = window.setTimeout(() => void refresh(), 0);
+    if (activeView !== "running") {
+      return;
+    }
 
+    const initialRefresh = window.setTimeout(() => void refreshRunning(), 0);
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") {
-        void refresh();
+        void refreshRunning();
       }
     }, 3_000);
-
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        void refresh();
+        void refreshRunning();
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -137,27 +169,71 @@ export function PortboardDashboard() {
       window.clearTimeout(initialRefresh);
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      requestRef.current?.abort();
+      appsRequestRef.current?.abort();
     };
-  }, [refresh]);
+  }, [activeView, refreshRunning]);
 
-  const scannedTime = lastScan
+  useEffect(() => {
+    if (activeView !== "uncommitted") {
+      return;
+    }
+
+    const initialRefresh = window.setTimeout(() => void refreshUncommitted(), 0);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refreshUncommitted();
+      }
+    }, 30_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void refreshUncommitted();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      window.clearTimeout(initialRefresh);
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      gitRequestRef.current?.abort();
+    };
+  }, [activeView, refreshUncommitted]);
+
+  const isRunningView = activeView === "running";
+  const activeError = isRunningView ? appsError : gitError;
+  const activeRefreshing = isRunningView ? appsRefreshing : gitRefreshing;
+  const activeLastScan = isRunningView ? appsLastScan : gitLastScan;
+  const activeCount = isRunningView ? (apps?.length ?? 0) : (projects?.length ?? 0);
+  const activeCountLabel = isRunningView
+    ? `${activeCount} listening`
+    : `${activeCount} dirty`;
+  const activeWarningMessages = isRunningView
+    ? appWarnings
+    : gitWarnings.map(
+        (warning) => `${warning.directory}: ${warning.message}`,
+      );
+  const scannedTime = activeLastScan
     ? new Intl.DateTimeFormat(undefined, {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
-      }).format(new Date(lastScan))
+      }).format(new Date(activeLastScan))
     : "Waiting for first scan";
+
+  const manualRefresh = isRunningView ? refreshRunning : refreshUncommitted;
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
-      <header className="mb-8 flex flex-col gap-6 lg:mb-10 lg:flex-row lg:items-end lg:justify-between">
+      <header className="mb-7 flex flex-col gap-6 lg:mb-8 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <div className="mb-4 flex items-center gap-3">
             <div className="grid size-10 place-items-center rounded-xl border border-primary/20 bg-primary/10 shadow-[0_0_24px_-8px_var(--primary)]">
               <SquareTerminal className="size-5 text-primary" aria-hidden="true" />
             </div>
-            <Badge variant="outline" className="border-border/80 bg-background/60 font-mono text-muted-foreground">
+            <Badge
+              variant="outline"
+              className="border-border/80 bg-background/60 font-mono text-muted-foreground"
+            >
               Windows local
             </Badge>
           </div>
@@ -165,32 +241,32 @@ export function PortboardDashboard() {
             Portboard
           </h1>
           <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground sm:text-base">
-            Your running JavaScript projects, their ports, and the context you
-            forgot three terminals ago.
+            Running development servers and unfinished Git work, without the
+            terminal archaeology.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex h-9 items-center gap-2 rounded-lg border border-border/80 bg-card/70 px-3 text-xs text-muted-foreground">
             <span className="relative flex size-2">
-              {!error && (
+              {!activeError && (
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-60" />
               )}
               <span
-                className={`relative inline-flex size-2 rounded-full ${error ? "bg-destructive" : "bg-emerald-400"}`}
+                className={`relative inline-flex size-2 rounded-full ${activeError ? "bg-destructive" : "bg-emerald-400"}`}
               />
             </span>
-            <span>{apps?.length ?? 0} listening</span>
+            <span>{activeCountLabel}</span>
             <span className="text-border">/</span>
             <span className="font-mono">{scannedTime}</span>
           </div>
           <Button
             variant="outline"
             size="lg"
-            onClick={() => void refresh()}
-            disabled={refreshing}
+            onClick={() => void manualRefresh()}
+            disabled={activeRefreshing}
           >
-            {refreshing ? (
+            {activeRefreshing ? (
               <LoaderCircle className="animate-spin" data-icon="inline-start" />
             ) : (
               <RefreshCw data-icon="inline-start" />
@@ -200,109 +276,67 @@ export function PortboardDashboard() {
         </div>
       </header>
 
-      {error && (
-        <Alert variant="destructive" className="mb-5 bg-destructive/8">
-          <AlertTriangle />
-          <AlertTitle>Scan unavailable</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+      <Tabs
+        value={activeView}
+        onValueChange={(value) => setActiveView(value as DashboardView)}
+        className="flex-1"
+      >
+        <TabsList className="h-10 w-full justify-start border border-border/70 bg-card/65 p-1 sm:w-fit">
+          <TabsTrigger value="running" className="h-8 min-w-32 px-3">
+            <RadioTower data-icon="inline-start" />
+            Running
+            {apps !== null && (
+              <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
+                {apps.length}
+              </span>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="uncommitted" className="h-8 min-w-36 px-3">
+            <GitCommitHorizontal data-icon="inline-start" />
+            Uncommitted
+            {projects !== null && (
+              <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
+                {projects.length}
+              </span>
+            )}
+          </TabsTrigger>
+        </TabsList>
 
-      {warnings.length > 0 && (
-        <Alert className="mb-5 bg-card/80">
-          <AlertTriangle />
-          <AlertTitle>Some process details were unavailable</AlertTitle>
-          <AlertDescription>{warnings.join(" ")}</AlertDescription>
-        </Alert>
-      )}
+        {activeError && (
+          <Alert variant="destructive" className="mt-3 bg-destructive/8">
+            <AlertTriangle />
+            <AlertTitle>
+              {isRunningView ? "Scan unavailable" : "Git scan unavailable"}
+            </AlertTitle>
+            <AlertDescription>{activeError}</AlertDescription>
+          </Alert>
+        )}
 
-      {apps === null ? (
-        <DashboardSkeleton />
-      ) : apps.length === 0 ? (
-        <EmptyState />
-      ) : (
-        <>
-          <Card className="hidden overflow-hidden border-border/80 bg-card/88 py-0 shadow-2xl shadow-black/20 md:block">
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-border/70 bg-muted/25 hover:bg-muted/25">
-                    <TableHead className="w-28 pl-5">Port</TableHead>
-                    <TableHead>Project</TableHead>
-                    <TableHead>Folder</TableHead>
-                    <TableHead className="w-44">Git branch</TableHead>
-                    <TableHead className="w-48 pr-5 text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {apps.map((app) => (
-                    <TableRow key={app.id} className="group border-border/60">
-                      <TableCell className="pl-5">
-                        <div className="flex items-center gap-2 font-mono text-base font-semibold text-primary">
-                          <Radio className="size-3.5 text-emerald-400" aria-hidden="true" />
-                          :{app.port}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex max-w-64 items-center gap-2">
-                          <span className="truncate font-medium" title={app.projectName}>
-                            {app.projectName}
-                          </span>
-                          <RuntimeBadge runtime={app.runtime} />
-                          {app.confidence === "unidentified" && (
-                            <Badge variant="outline" className="text-[0.65rem] text-amber-300">
-                              Unidentified
-                            </Badge>
-                          )}
-                        </div>
-                        <span className="mt-1 block font-mono text-[0.68rem] text-muted-foreground">
-                          PID {app.pid}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex max-w-[34rem] items-center gap-2 text-xs text-muted-foreground">
-                          <Folder className="size-3.5 shrink-0" aria-hidden="true" />
-                          <span
-                            className="truncate font-mono"
-                            title={app.projectRoot ?? "Unavailable"}
-                          >
-                            {app.projectRoot ?? "Project folder unavailable"}
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <GitBranch className="size-3.5" aria-hidden="true" />
-                          <span className="max-w-32 truncate font-mono" title={app.gitBranch ?? "No Git branch"}>
-                            {app.gitBranch ?? "—"}
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="pr-5">
-                        <AppActions app={app} onStopped={() => void refresh()} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+        {activeWarningMessages.length > 0 && (
+          <Alert className="mt-3 bg-card/80">
+            <AlertTriangle />
+            <AlertTitle>Some details were unavailable</AlertTitle>
+            <AlertDescription>
+              {activeWarningMessages.slice(0, 3).join(" ")}
+              {activeWarningMessages.length > 3
+                ? ` Plus ${activeWarningMessages.length - 3} more.`
+                : ""}
+            </AlertDescription>
+          </Alert>
+        )}
 
-          <div className="grid gap-3 md:hidden">
-            {apps.map((app) => (
-              <RunningAppCard
-                key={app.id}
-                app={app}
-                onStopped={() => void refresh()}
-              />
-            ))}
-          </div>
-        </>
-      )}
+        <TabsContent value="running" className="mt-3">
+          <RunningAppsView apps={apps} onStopped={() => void refreshRunning()} />
+        </TabsContent>
+        <TabsContent value="uncommitted" className="mt-3">
+          <UncommittedProjectsView projects={projects} />
+        </TabsContent>
+      </Tabs>
 
       <footer className="mt-auto pt-8 text-center font-mono text-[0.68rem] leading-5 text-muted-foreground/70">
-        Only same-user Node.js and Bun listeners are shown. Portboard cannot close
-        itself.
+        {isRunningView
+          ? "Only same-user Node.js and Bun listeners are shown. Portboard cannot close itself."
+          : `Scanning ${gitRoots.join(" and ")}. Git-ignored files are excluded.`}
       </footer>
     </main>
   );
