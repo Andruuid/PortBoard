@@ -1,36 +1,43 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Portboard
 
-## Getting Started
+Portboard is a private Windows dashboard for the Next.js, Node.js, and Bun apps
+currently listening on your machine. It shows each app's port, package name,
+project folder, and Git branch, with actions to open the site or stop its verified
+process tree.
 
-First, run the development server:
+## Start Portboard
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Double-click `start-portboard.cmd`, or run:
+
+```powershell
+npm run dashboard
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The launcher installs or rebuilds only when necessary, chooses the first free port
+from `43110` through `43119`, binds to `127.0.0.1`, and opens the dashboard in your
+default browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How discovery works
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Reads Windows TCP listeners and process ancestry through PowerShell.
+- Keeps only `node.exe` and `bun.exe` listeners owned by the current Windows user.
+- Recovers project metadata from process command lines, `package.json`, and Git.
+- Excludes Portboard itself and known internal Codex runtime helpers.
+- Supports Windows-native apps only; WSL, Docker, Deno, and unrelated services are
+  intentionally outside version one's scope.
 
-## Learn More
+The Close action always asks for confirmation. The server rescans and verifies the
+listener PID, creation time, owner, runtime, port, and signed fingerprint before
+attempting a normal process-tree stop and, if necessary, a force-stop.
 
-To learn more about Next.js, take a look at the following resources:
+## Development
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```powershell
+npm run dev
+npm run lint
+npm test
+npm run build
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The development server uses `http://127.0.0.1:43110`. The production launcher is
+the recommended day-to-day entry point.
