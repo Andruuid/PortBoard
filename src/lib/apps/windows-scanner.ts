@@ -8,7 +8,7 @@ import { request as httpsRequest } from "node:https";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import type { AppRuntime, RunningApp } from "@/lib/apps/types";
+import type { AppPortInfo, AppRuntime, RunningApp } from "@/lib/apps/types";
 
 const execFileAsync = promisify(execFile);
 const SCAN_SCRIPT = path.join(process.cwd(), "scripts", "scan-listeners.ps1");
@@ -76,7 +76,10 @@ declare global {
   var __portboardFingerprintSecret: Buffer | undefined;
 }
 
-const protocolCache = new Map<string, { expiresAt: number; protocol: string }>();
+const protocolCache = new Map<
+  string,
+  { expiresAt: number; protocol: "http" | "https" | null }
+>();
 const projectCache = new Map<
   string,
   { expiresAt: number; metadata: ProjectMetadata }
@@ -343,9 +346,18 @@ function getProjectMetadata(projectRoot: string): ProjectMetadata {
   return metadata;
 }
 
+function isMailDevCommand(commandLine: string): boolean {
+  const normalized = commandLine.replace(/[\\/]+/g, "\\");
+  return /\\node_modules\\(?:\.bin\\\.\.\\)?maildev\\/i.test(normalized);
+}
+
 function classifyRuntime(processInfo: RawProcess, ancestry: RawProcess[]): AppRuntime {
   if (processInfo.name.toLowerCase() === "bun.exe") {
     return "bun";
+  }
+
+  if (isMailDevCommand(processInfo.commandLine ?? "")) {
+    return "node";
   }
 
   const commandLines = ancestry
@@ -430,31 +442,161 @@ function tryProtocol(
   });
 }
 
-async function getOpenUrl(
+interface OpenTarget {
+  url: string;
+  protocol: "http" | "https" | null;
+}
+
+async function getOpenTarget(
   address: string,
   port: number,
   skipProbe: boolean,
-): Promise<string> {
+): Promise<OpenTarget> {
   const host = getProbeHost(address);
   const cacheKey = `${host}:${port}`;
   const cached = protocolCache.get(cacheKey);
 
   if (cached && cached.expiresAt > Date.now()) {
-    return `${cached.protocol}://${formatUrlHost(host)}:${port}`;
+    return {
+      url: `${cached.protocol ?? "http"}://${formatUrlHost(host)}:${port}`,
+      protocol: cached.protocol,
+    };
   }
 
-  let protocol = "http";
-  if (!skipProbe && !(await tryProtocol("http", host, port))) {
-    if (await tryProtocol("https", host, port)) {
-      protocol = "https";
-    }
+  let protocol: "http" | "https" | null = skipProbe ? "http" : null;
+  if (!skipProbe && (await tryProtocol("http", host, port))) {
+    protocol = "http";
+  } else if (!skipProbe && (await tryProtocol("https", host, port))) {
+    protocol = "https";
   }
 
   protocolCache.set(cacheKey, {
     protocol,
     expiresAt: Date.now() + PROTOCOL_CACHE_TTL_MS,
   });
-  return `${protocol}://${formatUrlHost(host)}:${port}`;
+  return {
+    url: `${protocol ?? "http"}://${formatUrlHost(host)}:${port}`,
+    protocol,
+  };
+}
+
+function commandFlagPort(commandLine: string, flag: string): number | null {
+  const match = commandLine.match(
+    new RegExp(`(?:^|\\s)--${flag}(?:=|\\s+)(\\d+)(?:\\s|$)`, "i"),
+  );
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function isDescendantOf(
+  processById: Map<number, RawProcess>,
+  processInfo: RawProcess,
+  ancestorPid: number,
+): boolean {
+  const visited = new Set<number>();
+  let current = processInfo;
+
+  while (current.parentProcessId > 0 && !visited.has(current.processId)) {
+    if (current.parentProcessId === ancestorPid) {
+      return true;
+    }
+    visited.add(current.processId);
+    const parent = processById.get(current.parentProcessId);
+    if (!parent) {
+      return false;
+    }
+    current = parent;
+  }
+
+  return false;
+}
+
+function isNextInternalWorkerPort(
+  candidate: CandidateApp,
+  processes: RawProcess[],
+  processById: Map<number, RawProcess>,
+): boolean {
+  const portPattern = new RegExp(`(?:^|\\s)${candidate.listener.localPort}(?:\\s|$)`);
+
+  return processes.some((processInfo) => {
+    const commandLine = processInfo.commandLine ?? "";
+    return (
+      isDescendantOf(processById, processInfo, candidate.process.processId) &&
+      /\\.next\\dev\\build\\(?:postcss|webpack)\.js/i.test(commandLine) &&
+      portPattern.test(commandLine)
+    );
+  });
+}
+
+function classifyPort(
+  candidate: CandidateApp,
+  protocol: OpenTarget["protocol"],
+  processes: RawProcess[],
+  processById: Map<number, RawProcess>,
+): AppPortInfo {
+  const commandLine = candidate.process.commandLine ?? "";
+  const port = candidate.listener.localPort;
+
+  if (isMailDevCommand(commandLine)) {
+    if (commandFlagPort(commandLine, "smtp") === port) {
+      return {
+        kind: "smtp",
+        label: "SMTP",
+        description: "MailDev receiver for local test email; it has no browser page.",
+        isPrimary: false,
+        canOpen: false,
+      };
+    }
+    if (commandFlagPort(commandLine, "web") === port) {
+      return {
+        kind: "mail-web",
+        label: "Mail inbox",
+        description: "MailDev browser inbox for previewing locally captured email.",
+        isPrimary: false,
+        canOpen: true,
+      };
+    }
+  }
+
+  if (
+    candidate.runtime === "next" &&
+    isNextInternalWorkerPort(candidate, processes, processById)
+  ) {
+    return {
+      kind: "internal",
+      label: "Build worker",
+      description: "Temporary Next.js development channel used by PostCSS/build tooling.",
+      isPrimary: false,
+      canOpen: false,
+    };
+  }
+
+  if (candidate.runtime === "next") {
+    return {
+      kind: "primary-web",
+      label: "Primary app",
+      description: "Main Next.js website for this development process.",
+      isPrimary: true,
+      canOpen: protocol !== null,
+    };
+  }
+
+  if (protocol !== null) {
+    return {
+      kind: "web",
+      label: "Web service",
+      description: "HTTP or HTTPS service with a browser-accessible response.",
+      isPrimary: false,
+      canOpen: true,
+    };
+  }
+
+  return {
+    kind: "service",
+    label: "Node service",
+    description: "Non-HTTP Node.js or Bun listener; its exact purpose is unknown.",
+    isPrimary: false,
+    canOpen: false,
+  };
 }
 
 export async function buildAppsFromSnapshot(
@@ -539,15 +681,16 @@ export async function buildAppsFromSnapshot(
         (candidate.projectRoot
           ? path.win32.basename(candidate.projectRoot)
           : `${candidate.runtime === "bun" ? "Bun" : "Node"} process ${candidate.process.processId}`);
+      const openTarget = await getOpenTarget(
+        candidate.listener.localAddress,
+        candidate.listener.localPort,
+        options.skipProtocolProbe ?? false,
+      );
 
       return {
         id: createFingerprint(candidate.process, candidate.listener.localPort),
         port: candidate.listener.localPort,
-        url: await getOpenUrl(
-          candidate.listener.localAddress,
-          candidate.listener.localPort,
-          options.skipProtocolProbe ?? false,
-        ),
+        url: openTarget.url,
         pid: candidate.process.processId,
         projectName,
         projectRoot: candidate.projectRoot,
@@ -559,6 +702,12 @@ export async function buildAppsFromSnapshot(
         ),
         startedAt: candidate.process.createdAt,
         listeningAddress: candidate.listener.localAddress,
+        portInfo: classifyPort(
+          candidate,
+          openTarget.protocol,
+          snapshot.processes,
+          processById,
+        ),
         runnerPid: candidate.runner.processId,
         runnerStartedAt: candidate.runner.createdAt,
       };

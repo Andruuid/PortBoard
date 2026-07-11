@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ExternalLink, LoaderCircle, Square } from "lucide-react";
+import { CircleSlash2, ExternalLink, LoaderCircle, Square } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -64,17 +64,30 @@ export function AppActions({ app, onStopped }: AppActionsProps) {
 
   return (
     <div className="flex items-center justify-end gap-2">
-      <Button asChild size="sm" variant="outline">
-        <a
-          href={app.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label={`Open ${app.projectName} on port ${app.port}`}
+      {app.portInfo.canOpen ? (
+        <Button asChild size="sm" variant="outline">
+          <a
+            href={app.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`Open ${app.projectName} on port ${app.port}`}
+          >
+            <ExternalLink data-icon="inline-start" />
+            Open
+          </a>
+        </Button>
+      ) : (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled
+          aria-label={`${app.portInfo.label} on port ${app.port} has no browser page`}
         >
-          <ExternalLink data-icon="inline-start" />
-          Open
-        </a>
-      </Button>
+          <CircleSlash2 data-icon="inline-start" />
+          No web UI
+        </Button>
+      )}
 
       <AlertDialog open={open} onOpenChange={setOpen}>
         <AlertDialogTrigger asChild>

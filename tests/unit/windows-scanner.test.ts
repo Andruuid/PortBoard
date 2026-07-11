@@ -114,4 +114,56 @@ describe("Windows listener discovery", () => {
       }),
     ).resolves.toEqual([]);
   });
+
+  test("identifies MailDev ports, the primary Next app, and an internal build channel", async () => {
+    const projectRoot = path.resolve("tests", "fixtures", "sample-node-app");
+    const maildev = processInfo(
+      701,
+      1,
+      "node.exe",
+      `"node" "${projectRoot}\\node_modules\\maildev\\bin\\maildev" --ip 127.0.0.1 --smtp 1025 --web 1080`,
+    );
+    const next = processInfo(
+      801,
+      1,
+      "node.exe",
+      `"node" "${projectRoot}\\node_modules\\next\\dist\\server\\lib\\start-server.js"`,
+    );
+    const postcss = processInfo(
+      802,
+      801,
+      "node.exe",
+      `"node" "${projectRoot}\\.next\\dev\\build\\postcss.js" 63178`,
+    );
+    const snapshot: WindowsSnapshot = {
+      currentIdentity: "WORKSTATION\\developer",
+      listeners: [
+        { localAddress: "127.0.0.1", localPort: 1025, owningProcess: 701 },
+        { localAddress: "127.0.0.1", localPort: 1080, owningProcess: 701 },
+        { localAddress: "127.0.0.1", localPort: 3001, owningProcess: 801 },
+        { localAddress: "127.0.0.1", localPort: 63178, owningProcess: 801 },
+      ],
+      processes: [maildev, next, postcss],
+      owners: {
+        "701": "WORKSTATION\\developer",
+        "801": "WORKSTATION\\developer",
+      },
+    };
+
+    const apps = await buildAppsFromSnapshot(snapshot, {
+      protectedPid: -1,
+      skipProtocolProbe: true,
+    });
+    const byPort = new Map(apps.map((item) => [item.port, item]));
+
+    expect(byPort.get(1025)?.portInfo.kind).toBe("smtp");
+    expect(byPort.get(1025)?.portInfo.canOpen).toBe(false);
+    expect(byPort.get(1025)?.runtime).toBe("node");
+    expect(byPort.get(1080)?.portInfo.kind).toBe("mail-web");
+    expect(byPort.get(3001)?.portInfo).toMatchObject({
+      kind: "primary-web",
+      isPrimary: true,
+    });
+    expect(byPort.get(63178)?.portInfo.kind).toBe("internal");
+  });
 });
