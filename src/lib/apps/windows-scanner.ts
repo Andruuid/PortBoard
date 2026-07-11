@@ -8,7 +8,12 @@ import { request as httpsRequest } from "node:https";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import type { AppPortInfo, AppRuntime, RunningApp } from "@/lib/apps/types";
+import type {
+  AppPortInfo,
+  AppRuntime,
+  AppSupervision,
+  RunningApp,
+} from "@/lib/apps/types";
 
 const execFileAsync = promisify(execFile);
 const SCAN_SCRIPT = path.join(process.cwd(), "scripts", "scan-listeners.ps1");
@@ -22,6 +27,22 @@ const SHELL_NAMES = new Set([
 ]);
 const RUNNER_PATTERN =
   /(?:\\|\/|\s)(?:next|vite|nodemon|tsx|ts-node-dev|webpack-dev-server|react-scripts|astro|nuxt|remix|serve|http-server)(?:\\|\/|\s|\.cmd|$)/i;
+const HARD_STOP_BOUNDARIES = new Set([
+  "powershell.exe",
+  "pwsh.exe",
+  "conhost.exe",
+  "windowsterminal.exe",
+  "code.exe",
+  "codex.exe",
+  "explorer.exe",
+]);
+const SUPERVISOR_PATTERNS = [
+  { name: "concurrently", pattern: /\\concurrently\\/i },
+  { name: "npm-run-all", pattern: /\\npm-run-all\\/i },
+  { name: "nodemon", pattern: /\\nodemon\\/i },
+  { name: "Turborepo", pattern: /\\turbo\\/i },
+  { name: "Nx", pattern: /\\nx\\/i },
+] as const;
 const PROTOCOL_CACHE_TTL_MS = 30_000;
 const PROJECT_CACHE_TTL_MS = 5_000;
 
@@ -48,8 +69,9 @@ export interface WindowsSnapshot {
 }
 
 export interface ScannedRunningApp extends RunningApp {
-  runnerPid: number;
-  runnerStartedAt: string | null;
+  stopTargetPid: number;
+  stopTargetStartedAt: string | null;
+  stopTargetOwner: string;
 }
 
 export interface ScanOptions {
@@ -61,10 +83,17 @@ interface CandidateApp {
   listener: RawListener;
   process: RawProcess;
   ancestry: RawProcess[];
-  runner: RawProcess;
+  listenerRunner: RawProcess;
+  stopTarget: RawProcess;
+  supervision: AppSupervision;
   projectRoot: string | null;
   runtime: AppRuntime;
   groupKey: string;
+}
+
+export interface StopTargetSelection {
+  process: RawProcess;
+  supervision: AppSupervision;
 }
 
 interface ProjectMetadata {
@@ -203,6 +232,99 @@ export function selectRunnerProcess(ancestry: RawProcess[]): RawProcess {
   }
 
   return runner;
+}
+
+function normalizedProcessCommand(processInfo: RawProcess): string {
+  return (processInfo.commandLine ?? "").replace(/[\\/]+/g, "\\");
+}
+
+function supervisorName(processInfo: RawProcess, projectRoot: string): string | null {
+  const commandLine = normalizedProcessCommand(processInfo);
+  const projectModules = `${path.win32.normalize(projectRoot).toLowerCase()}\\node_modules\\`;
+  if (!commandLine.toLowerCase().includes(projectModules)) {
+    return null;
+  }
+
+  return (
+    SUPERVISOR_PATTERNS.find(({ pattern }) => pattern.test(commandLine))?.name ?? null
+  );
+}
+
+export function parseManagedCommands(
+  commandLine: string,
+  supervisor: string,
+): string[] {
+  if (supervisor !== "concurrently") {
+    return [];
+  }
+
+  const match = commandLine.match(
+    /(?:^|\s)(?:-n|--names)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s]+))/i,
+  );
+  return (match?.[1] ?? match?.[2] ?? match?.[3] ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+export function selectStopTarget(
+  ancestry: RawProcess[],
+  projectRoot: string | null,
+  owners: Record<string, string>,
+  currentIdentity: string,
+  protectedPids: Set<number> = new Set(),
+): StopTargetSelection {
+  const listenerRunner = selectRunnerProcess(ancestry);
+  const normalizedIdentity = currentIdentity.toLowerCase();
+  const runnerOwner = owners[String(listenerRunner.processId)]?.toLowerCase();
+  let process =
+    runnerOwner === normalizedIdentity && !protectedPids.has(listenerRunner.processId)
+      ? listenerRunner
+      : ancestry[0];
+  let detectedUnverifiedSupervisor = false;
+  let selectedName: string | null = null;
+
+  if (projectRoot) {
+    for (const ancestor of ancestry.slice(1)) {
+      if (HARD_STOP_BOUNDARIES.has(ancestor.name.toLowerCase())) {
+        break;
+      }
+
+      const name = supervisorName(ancestor, projectRoot);
+      if (!name) {
+        continue;
+      }
+
+      const owner = owners[String(ancestor.processId)]?.toLowerCase();
+      if (owner !== normalizedIdentity || protectedPids.has(ancestor.processId)) {
+        detectedUnverifiedSupervisor = true;
+        continue;
+      }
+
+      process = ancestor;
+      selectedName = name;
+    }
+  }
+
+  return {
+    process,
+    supervision: selectedName
+      ? {
+          kind: "supervised",
+          supervisorName: selectedName,
+          managedCommands: parseManagedCommands(
+            process.commandLine ?? "",
+            selectedName,
+          ),
+          restartLikely: true,
+        }
+      : {
+          kind: "direct",
+          supervisorName: null,
+          managedCommands: [],
+          restartLikely: detectedUnverifiedSupervisor,
+        },
+  };
 }
 
 function cleanExtractedPath(value: string): string {
@@ -643,13 +765,30 @@ export async function buildAppsFromSnapshot(
       continue;
     }
 
-    const runner = selectRunnerProcess(ancestry);
-    if (protectedAncestry.has(runner.processId)) {
+    const projectRoot = findProjectRoot(ancestry);
+    if (!projectRoot && isInternalCodexHelper(ancestry)) {
       continue;
     }
 
-    const projectRoot = findProjectRoot(ancestry);
-    if (!projectRoot && isInternalCodexHelper(ancestry)) {
+    const listenerRunner = selectRunnerProcess(ancestry);
+    const stopSelection = selectStopTarget(
+      ancestry,
+      projectRoot,
+      snapshot.owners,
+      snapshot.currentIdentity,
+      protectedAncestry,
+    );
+    if (
+      protectedAncestry.has(listenerRunner.processId) ||
+      protectedAncestry.has(stopSelection.process.processId)
+    ) {
+      continue;
+    }
+
+    const stopOwner = snapshot.owners[
+      String(stopSelection.process.processId)
+    ]?.toLowerCase();
+    if (stopOwner !== currentIdentity) {
       continue;
     }
 
@@ -657,10 +796,12 @@ export async function buildAppsFromSnapshot(
       listener,
       process: processInfo,
       ancestry,
-      runner,
+      listenerRunner,
+      stopTarget: stopSelection.process,
+      supervision: stopSelection.supervision,
       projectRoot,
       runtime: classifyRuntime(processInfo, ancestry),
-      groupKey: `${runner.processId}:${runner.createdAt ?? "unknown"}`,
+      groupKey: `${stopSelection.process.processId}:${stopSelection.process.createdAt ?? "unknown"}`,
     });
   }
 
@@ -708,8 +849,11 @@ export async function buildAppsFromSnapshot(
           snapshot.processes,
           processById,
         ),
-        runnerPid: candidate.runner.processId,
-        runnerStartedAt: candidate.runner.createdAt,
+        supervision: candidate.supervision,
+        stopTargetPid: candidate.stopTarget.processId,
+        stopTargetStartedAt: candidate.stopTarget.createdAt,
+        stopTargetOwner:
+          snapshot.owners[String(candidate.stopTarget.processId)] ?? "",
       };
     }),
   );
@@ -725,8 +869,14 @@ export async function scanRunningApps(
 }
 
 export function toPublicRunningApp(app: ScannedRunningApp): RunningApp {
-  const { runnerPid, runnerStartedAt, ...publicApp } = app;
-  void runnerPid;
-  void runnerStartedAt;
+  const {
+    stopTargetPid,
+    stopTargetStartedAt,
+    stopTargetOwner,
+    ...publicApp
+  } = app;
+  void stopTargetPid;
+  void stopTargetStartedAt;
+  void stopTargetOwner;
   return publicApp;
 }

@@ -31,9 +31,31 @@ foreach ($process in $cimProcesses) {
   $processById[[int]$process.ProcessId] = $process
 }
 
+$ownerCandidateIds = @{}
+$listenerIds = @($listeners | Select-Object -ExpandProperty owningProcess -Unique)
+$ownerCommandPattern = '(?i)(next|vite|nodemon|tsx|ts-node-dev|webpack-dev-server|react-scripts|astro|nuxt|remix|serve|http-server|concurrently|npm-run-all|turbo|nx)'
+foreach ($listenerId in $listenerIds) {
+  $currentId = [int]$listenerId
+  $ownerCandidateIds[$currentId] = $true
+  $visited = @{}
+  while ($currentId -gt 0 -and -not $visited.ContainsKey($currentId) -and $visited.Count -lt 64) {
+    $visited[$currentId] = $true
+    if (-not $processById.ContainsKey($currentId)) {
+      break
+    }
+    $currentProcess = $processById[$currentId]
+    if (
+      $currentProcess.Name -in @("node.exe", "bun.exe") -and
+      $currentProcess.CommandLine -match $ownerCommandPattern
+    ) {
+      $ownerCandidateIds[$currentId] = $true
+    }
+    $currentId = [int]$currentProcess.ParentProcessId
+  }
+}
+
 $owners = [ordered]@{}
-$candidateIds = @($listeners | Select-Object -ExpandProperty owningProcess -Unique)
-foreach ($candidateId in $candidateIds) {
+foreach ($candidateId in $ownerCandidateIds.Keys) {
   if (-not $processById.ContainsKey([int]$candidateId)) {
     continue
   }

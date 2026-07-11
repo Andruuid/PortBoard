@@ -5,7 +5,9 @@ import { describe, expect, test } from "vitest";
 import {
   buildAppsFromSnapshot,
   extractWindowsPaths,
+  parseManagedCommands,
   selectRunnerProcess,
+  selectStopTarget,
   type RawProcess,
   type WindowsSnapshot,
 } from "@/lib/apps/windows-scanner";
@@ -56,6 +58,113 @@ describe("Windows listener discovery", () => {
     expect(selectRunnerProcess([listener, nextRunner, commandShell]).processId).toBe(20);
   });
 
+  test("selects a same-user project-local concurrently supervisor across npm wrappers", () => {
+    const projectRoot = path.resolve("tests", "fixtures", "sample-node-app");
+    const listener = processInfo(90, 80, "node.exe", `${projectRoot}\\server.mjs`);
+    const next = processInfo(
+      80,
+      70,
+      "node.exe",
+      `${projectRoot}\\node_modules\\next\\dist\\bin\\next dev`,
+    );
+    const nextShell = processInfo(70, 60, "cmd.exe", "cmd.exe /c next dev");
+    const npm = processInfo(60, 50, "node.exe", "npm-cli.js run next:dev");
+    const npmShell = processInfo(50, 40, "cmd.exe", "cmd.exe /c npm run next:dev");
+    const concurrently = processInfo(
+      40,
+      30,
+      "node.exe",
+      `${projectRoot}\\node_modules\\concurrently\\dist\\bin\\concurrently.js -n next,worker,evidence,research --restart-tries 10`,
+    );
+    const terminal = processInfo(30, 1, "powershell.exe", "powershell.exe -NoExit");
+    const ancestry = [listener, next, nextShell, npm, npmShell, concurrently, terminal];
+    const owners = Object.fromEntries(
+      ancestry.map((process) => [String(process.processId), "WORKSTATION\\developer"]),
+    );
+
+    const selection = selectStopTarget(
+      ancestry,
+      projectRoot,
+      owners,
+      "WORKSTATION\\developer",
+    );
+
+    expect(selection.process.processId).toBe(40);
+    expect(selection.supervision).toEqual({
+      kind: "supervised",
+      supervisorName: "concurrently",
+      managedCommands: ["next", "worker", "evidence", "research"],
+      restartLikely: true,
+    });
+    expect(parseManagedCommands(concurrently.commandLine!, "concurrently")).toEqual([
+      "next",
+      "worker",
+      "evidence",
+      "research",
+    ]);
+  });
+
+  test("does not expand to an unverified or protected supervisor", () => {
+    const projectRoot = path.resolve("tests", "fixtures", "sample-node-app");
+    const listener = processInfo(190, 180, "node.exe", `${projectRoot}\\server.mjs`);
+    const next = processInfo(180, 170, "node.exe", `${projectRoot}\\node_modules\\next\\next.js`);
+    const supervisor = processInfo(
+      170,
+      160,
+      "node.exe",
+      `${projectRoot}\\node_modules\\concurrently\\dist\\bin\\concurrently.js -n web,worker`,
+    );
+    const terminal = processInfo(160, 1, "powershell.exe", "powershell.exe");
+    const owners = {
+      "190": "WORKSTATION\\developer",
+      "180": "WORKSTATION\\developer",
+      "170": "OTHER\\user",
+    };
+
+    const foreign = selectStopTarget(
+      [listener, next, supervisor, terminal],
+      projectRoot,
+      owners,
+      "WORKSTATION\\developer",
+    );
+    expect(foreign.process.processId).toBe(180);
+    expect(foreign.supervision).toMatchObject({
+      kind: "direct",
+      restartLikely: true,
+    });
+
+    const protectedSelection = selectStopTarget(
+      [listener, next, supervisor, terminal],
+      projectRoot,
+      { ...owners, "170": "WORKSTATION\\developer" },
+      "WORKSTATION\\developer",
+      new Set([170]),
+    );
+    expect(protectedSelection.process.processId).toBe(180);
+
+    const globalSupervisor = {
+      ...supervisor,
+      commandLine:
+        "C:\\Users\\developer\\AppData\\Roaming\\npm\\node_modules\\concurrently\\dist\\bin\\concurrently.js",
+    };
+    const globalSelection = selectStopTarget(
+      [listener, next, globalSupervisor, terminal],
+      projectRoot,
+      { ...owners, "170": "WORKSTATION\\developer" },
+      "WORKSTATION\\developer",
+    );
+    expect(globalSelection.process.processId).toBe(180);
+    expect(globalSelection.supervision.kind).toBe("direct");
+
+    const beyondTerminal = selectStopTarget(
+      [listener, next, terminal, supervisor],
+      projectRoot,
+      { ...owners, "170": "WORKSTATION\\developer" },
+      "WORKSTATION\\developer",
+    );
+    expect(beyondTerminal.process.processId).toBe(180);
+  });
+
   test("deduplicates addresses, enriches package metadata, and sorts by port", async () => {
     const projectRoot = path.resolve("tests", "fixtures", "sample-node-app");
     const script = path.join(projectRoot, "server.mjs");
@@ -85,6 +194,41 @@ describe("Windows listener discovery", () => {
     expect(apps[0].projectName).toBe("portboard-disposable-fixture");
     expect(apps[1].listeningAddress).toBe("127.0.0.1");
     expect(apps[1].confidence).toBe("identified");
+  });
+
+  test("groups affected ports beneath the same verified supervisor", async () => {
+    const projectRoot = path.resolve("tests", "fixtures", "sample-node-app");
+    const supervisor = processInfo(
+      900,
+      1,
+      "node.exe",
+      `${projectRoot}\\node_modules\\concurrently\\dist\\bin\\concurrently.js -n web,worker`,
+    );
+    const web = processInfo(901, 900, "node.exe", `node ${projectRoot}\\server.mjs`);
+    const worker = processInfo(902, 900, "node.exe", `node ${projectRoot}\\worker.mjs`);
+    const snapshot: WindowsSnapshot = {
+      currentIdentity: "WORKSTATION\\developer",
+      listeners: [
+        { localAddress: "127.0.0.1", localPort: 3000, owningProcess: 901 },
+        { localAddress: "127.0.0.1", localPort: 4100, owningProcess: 902 },
+      ],
+      processes: [web, worker, supervisor],
+      owners: {
+        "900": "WORKSTATION\\developer",
+        "901": "WORKSTATION\\developer",
+        "902": "WORKSTATION\\developer",
+      },
+    };
+
+    const apps = await buildAppsFromSnapshot(snapshot, {
+      protectedPid: -1,
+      skipProtocolProbe: true,
+    });
+
+    expect(apps).toHaveLength(2);
+    expect(apps.every((app) => app.supervision.kind === "supervised")).toBe(true);
+    expect(apps.every((app) => app.allPorts.join(",") === "3000,4100")).toBe(true);
+    expect(apps.every((app) => app.stopTargetPid === 900)).toBe(true);
   });
 
   test("excludes the protected process and unresolved Codex helpers", async () => {

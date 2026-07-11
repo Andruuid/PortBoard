@@ -29,6 +29,12 @@ function app(
       isPrimary: true,
       canOpen: true,
     },
+    supervision: {
+      kind: "direct",
+      supervisorName: null,
+      managedCommands: [],
+      restartLikely: false,
+    },
   };
 }
 

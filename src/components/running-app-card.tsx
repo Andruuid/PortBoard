@@ -3,6 +3,7 @@ import { Folder, GitBranch, Radio } from "lucide-react";
 import { AppActions } from "@/components/app-actions";
 import { PortRoleBadge } from "@/components/port-role-badge";
 import { RuntimeBadge } from "@/components/runtime-badge";
+import { SupervisionBadge } from "@/components/supervision-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import type { RunningApp } from "@/lib/apps/types";
@@ -24,6 +25,7 @@ export function RunningAppCard({ app, onStopped }: RunningAppCardProps) {
               </span>
               <RuntimeBadge runtime={app.runtime} />
               <PortRoleBadge portInfo={app.portInfo} />
+              <SupervisionBadge supervision={app.supervision} />
             </div>
             <h2 className="truncate font-medium">{app.projectName}</h2>
           </div>
@@ -32,6 +34,11 @@ export function RunningAppCard({ app, onStopped }: RunningAppCardProps) {
 
         <p className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs leading-5 text-muted-foreground">
           {app.portInfo.description}
+          {app.supervision.kind === "supervised" && (
+            <span className="mt-1 block text-amber-300/80">
+              This listener may restart unless the managed stack is stopped.
+            </span>
+          )}
         </p>
 
         <div className="space-y-2 text-xs text-muted-foreground">

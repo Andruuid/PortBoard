@@ -15,6 +15,7 @@ import { AppActions } from "@/components/app-actions";
 import { PortRoleBadge } from "@/components/port-role-badge";
 import { RunningAppCard } from "@/components/running-app-card";
 import { RuntimeBadge } from "@/components/runtime-badge";
+import { SupervisionBadge } from "@/components/supervision-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -141,6 +142,7 @@ function RunningAppRow({
             {app.projectName}
           </span>
           <RuntimeBadge runtime={app.runtime} />
+          <SupervisionBadge supervision={app.supervision} />
           {app.confidence === "unidentified" && (
             <Badge variant="outline" className="text-[0.65rem] text-amber-300">
               Unidentified
@@ -150,6 +152,11 @@ function RunningAppRow({
         <span className="mt-1 block font-mono text-[0.68rem] text-muted-foreground">
           PID {app.pid}
         </span>
+        {app.supervision.kind === "supervised" && (
+          <span className="mt-1 block max-w-72 text-[0.68rem] leading-4 text-amber-300/80">
+            The listener may restart unless its managed stack is stopped.
+          </span>
+        )}
         <span
           className="mt-1 block max-w-72 text-[0.68rem] leading-4 text-muted-foreground"
           title={app.portInfo.description}
@@ -280,6 +287,7 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
                           {runtimeKinds.map((runtime) => (
                             <RuntimeBadge key={runtime} runtime={runtime} />
                           ))}
+                          <SupervisionBadge supervision={representative.supervision} />
                         </div>
                         <span className="mt-1 block text-[0.68rem] text-muted-foreground">
                           {group.apps

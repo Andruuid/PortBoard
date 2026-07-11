@@ -26,6 +26,8 @@ interface AppActionsProps {
 export function AppActions({ app, onStopped }: AppActionsProps) {
   const [open, setOpen] = useState(false);
   const [stopping, setStopping] = useState(false);
+  const isSupervised = app.supervision.kind === "supervised";
+  const destructiveLabel = isSupervised ? "Stop stack" : "Close";
 
   async function stopApp() {
     setStopping(true);
@@ -53,7 +55,7 @@ export function AppActions({ app, onStopped }: AppActionsProps) {
       setOpen(false);
       onStopped();
     } catch (error) {
-      toast.error("Could not close the app", {
+      toast.error(isSupervised ? "Could not stop the stack" : "Could not close the app", {
         description:
           error instanceof Error ? error.message : "The stop request failed.",
       });
@@ -94,21 +96,35 @@ export function AppActions({ app, onStopped }: AppActionsProps) {
           <Button
             size="sm"
             variant="destructive"
-            aria-label={`Close ${app.projectName} on port ${app.port}`}
+            aria-label={`${destructiveLabel} ${app.projectName} on port ${app.port}`}
           >
             <Square data-icon="inline-start" />
-            Close
+            {destructiveLabel}
           </Button>
         </AlertDialogTrigger>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Stop {app.projectName}?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {isSupervised
+                ? `Stop ${app.projectName}'s managed stack?`
+                : `Stop ${app.projectName}?`}
+            </AlertDialogTitle>
             <AlertDialogDescription className="leading-6">
-              Portboard will stop the verified process tree and free {" "}
-              {app.allPorts.length === 1
-                ? `port ${app.allPorts[0]}`
-                : `ports ${app.allPorts.join(", ")}`}
-              . Unsaved in-memory work in that server will be lost.
+              {isSupervised
+                ? `Portboard will stop the verified ${app.supervision.supervisorName} supervisor and every sibling command it manages.`
+                : "Portboard will stop the verified process tree."}
+              {isSupervised && app.supervision.managedCommands.length > 0 && (
+                <span className="mt-2 block">
+                  Managed commands: {app.supervision.managedCommands.join(", ")}.
+                </span>
+              )}
+              <span className="mt-2 block">
+                This will free {" "}
+                {app.allPorts.length === 1
+                  ? `port ${app.allPorts[0]}`
+                  : `ports ${app.allPorts.join(", ")}`}
+                . Unsaved in-memory work in the affected processes will be lost.
+              </span>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -126,7 +142,11 @@ export function AppActions({ app, onStopped }: AppActionsProps) {
               ) : (
                 <Square data-icon="inline-start" />
               )}
-              {stopping ? "Stopping…" : "Stop app"}
+              {stopping
+                ? "Stopping…"
+                : isSupervised
+                  ? "Stop managed stack"
+                  : "Stop app"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

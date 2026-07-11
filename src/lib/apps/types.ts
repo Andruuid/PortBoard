@@ -18,6 +18,13 @@ export interface AppPortInfo {
   canOpen: boolean;
 }
 
+export interface AppSupervision {
+  kind: "direct" | "supervised";
+  supervisorName: string | null;
+  managedCommands: string[];
+  restartLikely: boolean;
+}
+
 export interface RunningApp {
   id: string;
   port: number;
@@ -32,6 +39,7 @@ export interface RunningApp {
   startedAt: string | null;
   listeningAddress: string;
   portInfo: AppPortInfo;
+  supervision: AppSupervision;
 }
 
 export interface AppsResponse {
@@ -44,5 +52,7 @@ export interface CloseAppResponse {
   stopped: boolean;
   forced: boolean;
   releasedPorts: number[];
+  stopScope: "app" | "managed-stack";
+  replacementDetected: boolean;
   message: string;
 }

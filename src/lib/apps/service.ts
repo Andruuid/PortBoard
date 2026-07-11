@@ -10,6 +10,7 @@ import type {
 } from "@/lib/apps/types";
 import {
   scanRunningApps,
+  readWindowsSnapshot,
   toPublicRunningApp,
   type ScanOptions,
   type ScannedRunningApp,
@@ -102,12 +103,46 @@ async function terminateProcessTree(
 }
 
 function releasedPorts(
-  target: ScannedRunningApp,
-  remainingApps: ScannedRunningApp[],
+  expectedPorts: number[],
+  occupiedPorts: Set<number>,
 ): number[] {
-  return target.allPorts.filter(
-    (port) => !remainingApps.some((app) => app.port === port),
+  return expectedPorts.filter((port) => !occupiedPorts.has(port));
+}
+
+function stopScope(target: ScannedRunningApp): "app" | "managed-stack" {
+  return target.supervision.kind === "supervised" ? "managed-stack" : "app";
+}
+
+export function evaluateStopState(
+  target: ScannedRunningApp,
+  snapshot: Awaited<ReturnType<typeof readWindowsSnapshot>>,
+): {
+  targetStillExists: boolean;
+  occupiedPorts: Set<number>;
+  releasedPorts: number[];
+  replacementDetected: boolean;
+} {
+  const processInfo = target.stopTargetStartedAt
+    ? snapshot.processes.find(
+    (process) => process.processId === target.stopTargetPid,
+      )
+    : undefined;
+  const currentOwner = snapshot.owners[String(target.stopTargetPid)];
+  const targetStillExists = Boolean(
+    processInfo &&
+      processInfo.createdAt === target.stopTargetStartedAt &&
+      (!currentOwner ||
+        currentOwner.toLowerCase() === target.stopTargetOwner.toLowerCase()),
   );
+  const occupiedPorts = new Set(snapshot.listeners.map((listener) => listener.localPort));
+  const freedPorts = releasedPorts(target.allPorts, occupiedPorts);
+
+  return {
+    targetStillExists,
+    occupiedPorts,
+    releasedPorts: freedPorts,
+    replacementDetected: target.allPorts.some((port) => occupiedPorts.has(port)),
+  };
 }
 
 export async function closeRunningApp(
@@ -127,46 +162,48 @@ export async function closeRunningApp(
         stopped: false,
         forced: false,
         releasedPorts: [],
+        stopScope: "app",
+        replacementDetected: false,
         message: "This app is no longer running or its process identity changed.",
       },
     };
   }
 
-  const normalAttempt = await terminateProcessTree(target.runnerPid, false);
+  const scope = stopScope(target);
+  const normalAttempt = await terminateProcessTree(target.stopTargetPid, false);
   await delay(2_000);
 
-  let remainingApps = await scanRunningApps({
-    ...options,
-    skipProtocolProbe: true,
-  });
-  let remainingTarget = remainingApps.find((app) => app.id === id);
+  let verificationSnapshot = await readWindowsSnapshot();
+  let stopState = evaluateStopState(target, verificationSnapshot);
   let forced = false;
   let forceAttempt: Awaited<ReturnType<typeof terminateProcessTree>> | null = null;
 
-  if (remainingTarget) {
+  if (stopState.targetStillExists) {
     forced = true;
-    forceAttempt = await terminateProcessTree(remainingTarget.runnerPid, true);
+    forceAttempt = await terminateProcessTree(target.stopTargetPid, true);
     await delay(650);
-    remainingApps = await scanRunningApps({
-      ...options,
-      skipProtocolProbe: true,
-    });
-    remainingTarget = remainingApps.find((app) => app.id === id);
+    verificationSnapshot = await readWindowsSnapshot();
+    stopState = evaluateStopState(target, verificationSnapshot);
   }
 
   cachedScan = null;
+  const { targetStillExists, occupiedPorts, releasedPorts: freedPorts, replacementDetected } =
+    stopState;
 
-  if (!remainingTarget) {
-    const ports = releasedPorts(target, remainingApps);
+  if (!targetStillExists && !replacementDetected) {
     return {
       status: 200,
       body: {
         stopped: true,
         forced,
-        releasedPorts: ports,
+        releasedPorts: freedPorts,
+        stopScope: scope,
+        replacementDetected: false,
         message: forced
           ? `${target.projectName} required a force-stop and is no longer running.`
-          : `${target.projectName} stopped successfully.`,
+          : scope === "managed-stack"
+            ? `${target.projectName}'s managed development stack stopped successfully.`
+            : `${target.projectName} stopped successfully.`,
       },
     };
   }
@@ -179,8 +216,12 @@ export async function closeRunningApp(
     body: {
       stopped: false,
       forced,
-      releasedPorts: releasedPorts(target, remainingApps),
-      message: accessDenied
+      releasedPorts: freedPorts,
+      stopScope: scope,
+      replacementDetected,
+      message: replacementDetected && !targetStillExists
+        ? `Port ${target.allPorts.find((port) => occupiedPorts.has(port))} was immediately reoccupied by a replacement process. The app appears to have restarted.`
+        : accessDenied
         ? "Windows denied permission to stop this process. It may be running as administrator."
         : normalAttempt.failed || forceAttempt?.failed
           ? "Windows could not stop the verified process tree."

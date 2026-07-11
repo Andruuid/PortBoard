@@ -5,6 +5,12 @@ currently listening on your machine. It shows each app's port, package name,
 project folder, and Git branch, with actions to open the site or stop its verified
 process tree.
 
+When a listener is managed by a verified project-local supervisor such as
+`concurrently`, Portboard labels it as managed and **Stop stack** terminates the
+supervisor plus its sibling commands. Direct listeners retain the narrower
+**Close** action. Portboard never crosses into the launching terminal, VS Code,
+or an agent process.
+
 The **Uncommitted** tab also scans Git repositories below `C:\Codex` and
 `C:\ClaudeCode`. It lists only projects with staged, modified, conflicted, or
 untracked work, ordered by the most recently changed local file. Ignored files are
