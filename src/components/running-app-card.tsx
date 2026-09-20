@@ -6,6 +6,7 @@ import { RuntimeBadge } from "@/components/runtime-badge";
 import { SupervisionBadge } from "@/components/supervision-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { folderDisplayName } from "@/lib/apps/folder-name";
 import type { RunningApp } from "@/lib/apps/types";
 
 interface RunningAppCardProps {
@@ -27,7 +28,8 @@ export function RunningAppCard({ app, onStopped }: RunningAppCardProps) {
               <PortRoleBadge portInfo={app.portInfo} />
               <SupervisionBadge supervision={app.supervision} />
             </div>
-            <h2 className="truncate font-medium">{app.projectName}</h2>
+            <h2 className="truncate font-medium">{folderDisplayName(app.projectRoot)}</h2>
+            <p className="truncate text-sm text-muted-foreground">{app.projectName}</p>
           </div>
           <Radio className="mt-1 size-4 shrink-0 text-emerald-400" aria-hidden="true" />
         </div>

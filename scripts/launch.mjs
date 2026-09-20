@@ -7,22 +7,40 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const nextBinary = path.join(projectRoot, "node_modules", "next", "dist", "bin", "next");
 
-function run(command, args) {
+function quoteWindowsCmdArg(value) {
+  if (!/[\s"&<>|^()%!]/u.test(value)) return value;
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+function run(command, args, extraOptions = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: projectRoot,
       env: process.env,
       stdio: "inherit",
       windowsHide: false,
+      ...extraOptions,
     });
     child.once("error", reject);
     child.once("exit", (code) => {
       if (code === 0) resolve();
       else reject(new Error(`${command} exited with code ${code ?? "unknown"}.`));
     });
+  });
+}
+
+function runNpm(args) {
+  if (process.platform !== "win32") {
+    return run("npm", args);
+  }
+
+  // Node 20.12+/24 throws spawn EINVAL for .cmd/.bat unless a shell launches
+  // them (CVE-2024-27980). Pass one command string so Node 24 does not also
+  // warn DEP0190 about unescaped shell args.
+  return run(["npm", ...args].map(quoteWindowsCmdArg).join(" "), [], {
+    shell: true,
   });
 }
 
@@ -99,12 +117,12 @@ async function waitUntilReady(port, child) {
 async function main() {
   if (!existsSync(nextBinary)) {
     console.log("Installing Portboard dependencies...");
-    await run(npmCommand, ["install"]);
+    await runNpm(["install"]);
   }
 
   if (buildIsStale()) {
     console.log("Building Portboard...");
-    await run(npmCommand, ["run", "build"]);
+    await runNpm(["run", "build"]);
   }
 
   const port = await findPort();

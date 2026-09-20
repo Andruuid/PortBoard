@@ -28,6 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { folderDisplayName } from "@/lib/apps/folder-name";
 import type { RunningApp } from "@/lib/apps/types";
 
 interface RunningAppsViewProps {
@@ -130,6 +131,11 @@ function RunningAppRow({
   return (
     <TableRow className="group border-border/60 bg-background/20">
       <TableCell className={grouped ? "pl-10" : "pl-5"}>
+        <span className="block max-w-48 truncate font-medium" title={folderDisplayName(app.projectRoot)}>
+          {folderDisplayName(app.projectRoot)}
+        </span>
+      </TableCell>
+      <TableCell>
         <div className="flex flex-wrap items-center gap-2 font-mono text-base font-semibold text-primary">
           <Radio className="size-3.5 text-emerald-400" aria-hidden="true" />
           :{app.port}
@@ -224,7 +230,8 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
           <Table>
             <TableHeader>
               <TableRow className="border-border/70 bg-muted/25 hover:bg-muted/25">
-                <TableHead className="w-48 pl-5">Port</TableHead>
+                <TableHead className="w-48 pl-5">Name</TableHead>
+                <TableHead className="w-48">Port</TableHead>
                 <TableHead>Project</TableHead>
                 <TableHead>Folder</TableHead>
                 <TableHead className="w-44">Git branch</TableHead>
@@ -253,6 +260,14 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
                   <Fragment key={group.key}>
                     <TableRow className="border-border/70 bg-muted/20 hover:bg-muted/30">
                       <TableCell className="pl-5">
+                        <span
+                          className="block max-w-48 truncate font-medium"
+                          title={folderDisplayName(group.projectRoot)}
+                        >
+                          {folderDisplayName(group.projectRoot)}
+                        </span>
+                      </TableCell>
+                      <TableCell>
                         <Button
                           type="button"
                           variant="ghost"
@@ -367,11 +382,16 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="truncate font-medium">{representative.projectName}</span>
+                        <span className="truncate font-medium">
+                          {folderDisplayName(group.projectRoot)}
+                        </span>
                         <Badge variant="outline" className="shrink-0 font-mono text-primary">
                           {group.apps.length} ports
                         </Badge>
                       </div>
+                      <span className="mt-1 block truncate text-xs text-muted-foreground">
+                        {representative.projectName}
+                      </span>
                       <span className="mt-1 block truncate font-mono text-xs text-muted-foreground">
                         {group.apps.map((app) => `:${app.port}`).join(" · ")}
                       </span>
