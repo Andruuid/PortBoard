@@ -9,6 +9,14 @@ $listeners = @(Get-NetTCPConnection -State Listen | ForEach-Object {
   }
 })
 
+$connections = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | ForEach-Object {
+  [PSCustomObject]@{
+    owningProcess = [int]$_.OwningProcess
+    remoteAddress = $_.RemoteAddress
+    remotePort = [int]$_.RemotePort
+  }
+})
+
 $cimProcesses = @(Get-CimInstance Win32_Process)
 $processes = @($cimProcesses | ForEach-Object {
   $createdAt = $null
@@ -32,6 +40,12 @@ foreach ($process in $cimProcesses) {
 }
 
 $ownerCandidateIds = @{}
+foreach ($process in $cimProcesses) {
+  if ($process.Name -in @("node.exe", "bun.exe")) {
+    $ownerCandidateIds[[int]$process.ProcessId] = $true
+  }
+}
+
 $listenerIds = @($listeners | Select-Object -ExpandProperty owningProcess -Unique)
 $ownerCommandPattern = '(?i)(next|vite|nodemon|tsx|ts-node-dev|webpack-dev-server|react-scripts|astro|nuxt|remix|serve|http-server|concurrently|npm-run-all|turbo|nx)'
 foreach ($listenerId in $listenerIds) {
@@ -79,6 +93,7 @@ foreach ($candidateId in $ownerCandidateIds.Keys) {
 [PSCustomObject]@{
   currentIdentity = $currentIdentity
   listeners = $listeners
+  connections = $connections
   processes = $processes
   owners = $owners
 } | ConvertTo-Json -Depth 6 -Compress

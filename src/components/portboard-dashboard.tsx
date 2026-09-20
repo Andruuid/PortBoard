@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Cpu,
   GitCommitHorizontal,
   LoaderCircle,
   RadioTower,
@@ -10,6 +11,7 @@ import {
   SquareTerminal,
 } from "lucide-react";
 
+import { BackgroundWorkersView } from "@/components/background-workers-view";
 import { RunningAppsView } from "@/components/running-apps-view";
 import { UncommittedProjectsView } from "@/components/uncommitted-projects-view";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -21,14 +23,19 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
-import type { AppsResponse, RunningApp } from "@/lib/apps/types";
+import type {
+  AppsResponse,
+  BackgroundWorker,
+  RunningApp,
+  WorkersResponse,
+} from "@/lib/apps/types";
 import type {
   GitScanWarning,
   UncommittedProject,
   UncommittedResponse,
 } from "@/lib/git/types";
 
-type DashboardView = "running" | "uncommitted";
+type DashboardView = "running" | "workers" | "uncommitted";
 
 const DEFAULT_GIT_ROOTS = ["C:\\Codex", "C:\\ClaudeCode"];
 
@@ -45,6 +52,13 @@ export function PortboardDashboard() {
   const [appsError, setAppsError] = useState<string | null>(null);
   const [appsRefreshing, setAppsRefreshing] = useState(false);
   const appsRequestRef = useRef<AbortController | null>(null);
+
+  const [workers, setWorkers] = useState<BackgroundWorker[] | null>(null);
+  const [workerWarnings, setWorkerWarnings] = useState<string[]>([]);
+  const [workersLastScan, setWorkersLastScan] = useState<string | null>(null);
+  const [workersError, setWorkersError] = useState<string | null>(null);
+  const [workersRefreshing, setWorkersRefreshing] = useState(false);
+  const workersRequestRef = useRef<AbortController | null>(null);
 
   const [projects, setProjects] = useState<UncommittedProject[] | null>(null);
   const [gitWarnings, setGitWarnings] = useState<GitScanWarning[]>([]);
@@ -94,6 +108,48 @@ export function PortboardDashboard() {
       if (appsRequestRef.current === controller) {
         appsRequestRef.current = null;
         setAppsRefreshing(false);
+      }
+    }
+  }, []);
+
+  const refreshWorkers = useCallback(async () => {
+    if (workersRequestRef.current) {
+      return;
+    }
+
+    const controller = new AbortController();
+    workersRequestRef.current = controller;
+    setWorkersRefreshing(true);
+
+    try {
+      const response = await fetch("/api/workers", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const payload = (await response.json()) as WorkersResponse & {
+        message?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.message ?? "The background process scan failed.");
+      }
+
+      setWorkers(payload.workers);
+      setWorkerWarnings(payload.warnings);
+      setWorkersLastScan(payload.scannedAt);
+      setWorkersError(null);
+    } catch (requestError) {
+      if (!isAbortError(requestError)) {
+        setWorkersError(
+          requestError instanceof Error
+            ? requestError.message
+            : "The background process scan failed.",
+        );
+      }
+    } finally {
+      if (workersRequestRef.current === controller) {
+        workersRequestRef.current = null;
+        setWorkersRefreshing(false);
       }
     }
   }, []);
@@ -174,6 +230,32 @@ export function PortboardDashboard() {
   }, [activeView, refreshRunning]);
 
   useEffect(() => {
+    if (activeView !== "workers") {
+      return;
+    }
+
+    const initialRefresh = window.setTimeout(() => void refreshWorkers(), 0);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refreshWorkers();
+      }
+    }, 5_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void refreshWorkers();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      window.clearTimeout(initialRefresh);
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      workersRequestRef.current?.abort();
+    };
+  }, [activeView, refreshWorkers]);
+
+  useEffect(() => {
     if (activeView !== "uncommitted") {
       return;
     }
@@ -199,28 +281,58 @@ export function PortboardDashboard() {
     };
   }, [activeView, refreshUncommitted]);
 
-  const isRunningView = activeView === "running";
-  const activeError = isRunningView ? appsError : gitError;
-  const activeRefreshing = isRunningView ? appsRefreshing : gitRefreshing;
-  const activeLastScan = isRunningView ? appsLastScan : gitLastScan;
-  const activeCount = isRunningView ? (apps?.length ?? 0) : (projects?.length ?? 0);
-  const activeCountLabel = isRunningView
-    ? `${activeCount} listening`
-    : `${activeCount} dirty`;
-  const activeWarningMessages = isRunningView
-    ? appWarnings
-    : gitWarnings.map(
+  const view = {
+    running: {
+      error: appsError,
+      refreshing: appsRefreshing,
+      lastScan: appsLastScan,
+      countLabel: `${apps?.length ?? 0} listening`,
+      errorTitle: "Scan unavailable",
+      warnings: appWarnings,
+      footer:
+        "Only same-user Node.js and Bun listeners are shown. Portboard cannot close itself.",
+    },
+    workers: {
+      error: workersError,
+      refreshing: workersRefreshing,
+      lastScan: workersLastScan,
+      countLabel: `${workers?.length ?? 0} background`,
+      errorTitle: "Background scan unavailable",
+      warnings: workerWarnings,
+      footer:
+        "Same-user Node.js and Bun processes that hold no port and belong to no listening app.",
+    },
+    uncommitted: {
+      error: gitError,
+      refreshing: gitRefreshing,
+      lastScan: gitLastScan,
+      countLabel: `${projects?.length ?? 0} dirty`,
+      errorTitle: "Git scan unavailable",
+      warnings: gitWarnings.map(
         (warning) => `${warning.directory}: ${warning.message}`,
-      );
-  const scannedTime = activeLastScan
+      ),
+      footer: `Scanning ${gitRoots.join(" and ")}. Git-ignored files are excluded.`,
+    },
+  }[activeView];
+
+  const activeError = view.error;
+  const activeRefreshing = view.refreshing;
+  const activeCountLabel = view.countLabel;
+  const activeWarningMessages = view.warnings;
+  const scannedTime = view.lastScan
     ? new Intl.DateTimeFormat(undefined, {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
-      }).format(new Date(activeLastScan))
+      }).format(new Date(view.lastScan))
     : "Waiting for first scan";
 
-  const manualRefresh = isRunningView ? refreshRunning : refreshUncommitted;
+  const manualRefresh =
+    activeView === "running"
+      ? refreshRunning
+      : activeView === "workers"
+        ? refreshWorkers
+        : refreshUncommitted;
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
@@ -291,6 +403,15 @@ export function PortboardDashboard() {
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="workers" className="h-8 min-w-36 px-3">
+            <Cpu data-icon="inline-start" />
+            Background
+            {workers !== null && (
+              <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
+                {workers.length}
+              </span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="uncommitted" className="h-8 min-w-36 px-3">
             <GitCommitHorizontal data-icon="inline-start" />
             Uncommitted
@@ -305,9 +426,7 @@ export function PortboardDashboard() {
         {activeError && (
           <Alert variant="destructive" className="mt-3 bg-destructive/8">
             <AlertTriangle />
-            <AlertTitle>
-              {isRunningView ? "Scan unavailable" : "Git scan unavailable"}
-            </AlertTitle>
+            <AlertTitle>{view.errorTitle}</AlertTitle>
             <AlertDescription>{activeError}</AlertDescription>
           </Alert>
         )}
@@ -328,15 +447,19 @@ export function PortboardDashboard() {
         <TabsContent value="running" className="mt-3">
           <RunningAppsView apps={apps} onStopped={() => void refreshRunning()} />
         </TabsContent>
+        <TabsContent value="workers" className="mt-3">
+          <BackgroundWorkersView
+            workers={workers}
+            onStopped={() => void refreshWorkers()}
+          />
+        </TabsContent>
         <TabsContent value="uncommitted" className="mt-3">
           <UncommittedProjectsView projects={projects} />
         </TabsContent>
       </Tabs>
 
       <footer className="mt-auto pt-8 text-center font-mono text-[0.68rem] leading-5 text-muted-foreground/70">
-        {isRunningView
-          ? "Only same-user Node.js and Bun listeners are shown. Portboard cannot close itself."
-          : `Scanning ${gitRoots.join(" and ")}. Git-ignored files are excluded.`}
+        {view.footer}
       </footer>
     </main>
   );

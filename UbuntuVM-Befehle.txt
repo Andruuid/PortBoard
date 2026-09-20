@@ -1,0 +1,8 @@
+# 1. Docker-Netz und betroffene Container anzeigen (veraendert nichts):
+sudo docker network inspect a024e032cccf --format 'Network: {{.Name}} | Containers: {{range .Containers}}{{.Name}} {{end}}'
+
+# 2. Temporaere Reparatur fuer Internet und RDP:
+sudo ip link set br-a024e032cccf down
+
+# 3. Verbindung zum Hyper-V-Gateway testen:
+ping -c 3 172.19.0.1

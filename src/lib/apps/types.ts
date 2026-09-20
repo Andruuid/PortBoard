@@ -56,3 +56,32 @@ export interface CloseAppResponse {
   replacementDetected: boolean;
   message: string;
 }
+
+export type WorkerRuntime = "node" | "bun";
+
+export interface BackgroundWorker {
+  id: string;
+  pid: number;
+  projectName: string;
+  projectRoot: string;
+  gitBranch: string | null;
+  runtime: WorkerRuntime;
+  scriptName: string | null;
+  startedAt: string | null;
+  processCount: number;
+  outboundConnections: number;
+  remoteEndpoints: string[];
+}
+
+export interface WorkersResponse {
+  workers: BackgroundWorker[];
+  scannedAt: string;
+  warnings: string[];
+}
+
+export interface StopWorkerResponse {
+  stopped: boolean;
+  forced: boolean;
+  stoppedProcesses: number;
+  message: string;
+}

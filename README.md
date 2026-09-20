@@ -11,6 +11,15 @@ supervisor plus its sibling commands. Direct listeners retain the narrower
 **Close** action. Portboard never crosses into the launching terminal, VS Code,
 or an agent process.
 
+The **Background** tab lists the opposite case: same-user Node.js and Bun
+processes that belong to a project but hold no port and sit under no listening
+app, such as queue workers left behind by a checkout you no longer use. Each
+entry is the root of its process tree and reports how many processes it covers,
+how many outbound connections they hold, and where those connections point, so
+an abandoned worker fleet that is still doing paid work is visible rather than
+silent. **Stop** ends the verified tree without crossing into the launching
+terminal.
+
 The **Uncommitted** tab also scans Git repositories below `C:\Codex` and
 `C:\ClaudeCode`. It lists only projects with staged, modified, conflicted, or
 untracked work, ordered by the most recently changed local file. Ignored files are
@@ -32,8 +41,14 @@ default browser.
 
 ## How discovery works
 
-- Reads Windows TCP listeners and process ancestry through PowerShell.
-- Keeps only `node.exe` and `bun.exe` listeners owned by the current Windows user.
+- Reads Windows TCP listeners, established connections, and process ancestry
+  through PowerShell.
+- Keeps only `node.exe` and `bun.exe` processes owned by the current Windows user.
+- Routes each one by port ownership: listeners become **Running** entries, while
+  portless processes that resolve to a project root become **Background**
+  entries. Anything descending from a listener stays on **Running** only.
+- Derives worker names from command lines as a bare script basename, because a
+  raw command line can carry API keys and never leaves the server.
 - Recovers project metadata from process command lines, `package.json`, and Git.
 - Excludes Portboard itself and known internal Codex runtime helpers.
 - Supports Windows-native apps only; WSL, Docker, Deno, and unrelated services are

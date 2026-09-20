@@ -7,7 +7,12 @@ import type {
   AppsResponse,
   CloseAppResponse,
   RunningApp,
+  StopWorkerResponse,
 } from "@/lib/apps/types";
+import {
+  scanBackgroundWorkers,
+  type ScannedBackgroundWorker,
+} from "@/lib/apps/worker-scanner";
 import {
   scanRunningApps,
   readWindowsSnapshot,
@@ -226,6 +231,95 @@ export async function closeRunningApp(
         : normalAttempt.failed || forceAttempt?.failed
           ? "Windows could not stop the verified process tree."
           : "The process still owns its port after the stop attempt.",
+    },
+  };
+}
+
+export interface StopWorkerServiceResult {
+  status: number;
+  body: StopWorkerResponse;
+}
+
+export function workerStillExists(
+  target: ScannedBackgroundWorker,
+  snapshot: Awaited<ReturnType<typeof readWindowsSnapshot>>,
+): boolean {
+  const processInfo = snapshot.processes.find(
+    (process) => process.processId === target.stopTargetPid,
+  );
+  const currentOwner = snapshot.owners[String(target.stopTargetPid)];
+
+  return Boolean(
+    processInfo &&
+      processInfo.createdAt === target.stopTargetStartedAt &&
+      (!currentOwner ||
+        currentOwner.toLowerCase() === target.stopTargetOwner.toLowerCase()),
+  );
+}
+
+export async function stopBackgroundWorker(
+  id: string,
+  options: ScanOptions = {},
+): Promise<StopWorkerServiceResult> {
+  const workers = await scanBackgroundWorkers(options);
+  const target = workers.find((worker) => worker.id === id);
+
+  if (!target) {
+    return {
+      status: 409,
+      body: {
+        stopped: false,
+        forced: false,
+        stoppedProcesses: 0,
+        message:
+          "This worker is no longer running or its process identity changed.",
+      },
+    };
+  }
+
+  const normalAttempt = await terminateProcessTree(target.stopTargetPid, false);
+  await delay(1_500);
+
+  let snapshot = await readWindowsSnapshot();
+  let forced = false;
+  let forceAttempt: Awaited<ReturnType<typeof terminateProcessTree>> | null = null;
+
+  if (workerStillExists(target, snapshot)) {
+    forced = true;
+    forceAttempt = await terminateProcessTree(target.stopTargetPid, true);
+    await delay(650);
+    snapshot = await readWindowsSnapshot();
+  }
+
+  if (!workerStillExists(target, snapshot)) {
+    const label = target.scriptName ?? `PID ${target.pid}`;
+    return {
+      status: 200,
+      body: {
+        stopped: true,
+        forced,
+        stoppedProcesses: target.processCount,
+        message: forced
+          ? `${label} required a force-stop and is no longer running.`
+          : `${label} stopped, releasing ${target.processCount} ${
+              target.processCount === 1 ? "process" : "processes"
+            }.`,
+      },
+    };
+  }
+
+  const output = `${normalAttempt.output}\n${forceAttempt?.output ?? ""}`;
+  const accessDenied = /access is denied|access denied/i.test(output);
+
+  return {
+    status: accessDenied ? 403 : 500,
+    body: {
+      stopped: false,
+      forced,
+      stoppedProcesses: 0,
+      message: accessDenied
+        ? "Windows denied permission to stop this process. It may be running as administrator."
+        : "Windows could not stop the verified process tree.",
     },
   };
 }

@@ -52,6 +52,12 @@ interface RawListener {
   owningProcess: number;
 }
 
+export interface RawConnection {
+  owningProcess: number;
+  remoteAddress: string;
+  remotePort: number;
+}
+
 export interface RawProcess {
   processId: number;
   parentProcessId: number;
@@ -64,6 +70,7 @@ export interface RawProcess {
 export interface WindowsSnapshot {
   currentIdentity: string;
   listeners: RawListener[];
+  connections?: RawConnection[];
   processes: RawProcess[];
   owners: Record<string, string>;
 }
@@ -96,7 +103,7 @@ export interface StopTargetSelection {
   supervision: AppSupervision;
 }
 
-interface ProjectMetadata {
+export interface ProjectMetadata {
   name: string | null;
   branch: string | null;
 }
@@ -134,9 +141,12 @@ function getFingerprintSecret(): Buffer {
   return globalThis.__portboardFingerprintSecret;
 }
 
-function createFingerprint(process: RawProcess, port: number): string {
+export function createFingerprint(
+  process: RawProcess,
+  scope: string | number,
+): string {
   return createHmac("sha256", getFingerprintSecret())
-    .update(`${process.processId}|${process.createdAt ?? "unknown"}|${port}`)
+    .update(`${process.processId}|${process.createdAt ?? "unknown"}|${scope}`)
     .digest("base64url");
 }
 
@@ -168,12 +178,14 @@ export async function readWindowsSnapshot(): Promise<WindowsSnapshot> {
     "listeners" | "processes"
   > & {
     listeners: RawListener | RawListener[] | null;
+    connections: RawConnection | RawConnection[] | null;
     processes: RawProcess | RawProcess[] | null;
   };
 
   return {
     currentIdentity: parsed.currentIdentity,
     listeners: asArray(parsed.listeners),
+    connections: asArray(parsed.connections),
     processes: asArray(parsed.processes),
     owners: parsed.owners ?? {},
   };
@@ -201,7 +213,7 @@ export function getProcessAncestry(
   return ancestry;
 }
 
-function isRuntimeProcess(processInfo: RawProcess): boolean {
+export function isRuntimeProcess(processInfo: RawProcess): boolean {
   return RUNTIME_NAMES.has(processInfo.name.toLowerCase());
 }
 
@@ -428,7 +440,7 @@ export function findProjectRoot(ancestry: RawProcess[]): string | null {
   return null;
 }
 
-function getProjectMetadata(projectRoot: string): ProjectMetadata {
+export function getProjectMetadata(projectRoot: string): ProjectMetadata {
   const cached = projectCache.get(projectRoot);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.metadata;
@@ -494,7 +506,7 @@ function classifyRuntime(processInfo: RawProcess, ancestry: RawProcess[]): AppRu
     : "node";
 }
 
-function isInternalCodexHelper(ancestry: RawProcess[]): boolean {
+export function isInternalCodexHelper(ancestry: RawProcess[]): boolean {
   const details = ancestry
     .flatMap((item) => [item.executablePath ?? "", item.commandLine ?? ""])
     .join(" ")
