@@ -9,5 +9,8 @@ export function GET(request: Request): Response {
     return Response.json({ message: validationError }, { status: 403 });
   }
 
-  return Response.json({ status: "ok" });
+  const url = new URL(request.url);
+  const port = url.port || (url.protocol === "https:" ? "443" : "80");
+
+  return Response.json({ status: "ok", port: Number(port) });
 }

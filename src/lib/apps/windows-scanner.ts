@@ -777,6 +777,10 @@ export async function buildAppsFromSnapshot(
       continue;
     }
 
+    if (protectedPid > 0 && isDescendantOf(processById, processInfo, protectedPid)) {
+      continue;
+    }
+
     const projectRoot = findProjectRoot(ancestry);
     if (!projectRoot && isInternalCodexHelper(ancestry)) {
       continue;
