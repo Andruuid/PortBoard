@@ -9,7 +9,8 @@
     "start": "next start -H 127.0.0.1 -p 43110",
     "lint": "eslint",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "tray": "powershell -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File scripts/tray-host.ps1"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

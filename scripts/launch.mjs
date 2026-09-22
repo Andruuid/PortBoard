@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
@@ -8,6 +8,27 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const nextBinary = path.join(projectRoot, "node_modules", "next", "dist", "bin", "next");
+const trayMode = process.env.PORTBOARD_TRAY === "1";
+const statePath =
+  process.env.PORTBOARD_STATE_PATH ||
+  path.join(process.env.TEMP || process.env.TMPDIR || projectRoot, "portboard-tray-state.json");
+const logPath =
+  process.env.PORTBOARD_LOG_PATH ||
+  path.join(process.env.TEMP || process.env.TMPDIR || projectRoot, "portboard-tray.log");
+
+function writeState(update) {
+  writeFileSync(
+    statePath,
+    `${JSON.stringify({ updatedAt: new Date().toISOString(), ...update }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+function appendLog(line) {
+  if (!trayMode) return;
+  appendFileSync(logPath, `${new Date().toISOString()} ${line}\n`, "utf8");
+}
+
 
 function quoteWindowsCmdArg(value) {
   if (!/[\s"&<>|^()%!]/u.test(value)) return value;
@@ -129,20 +150,33 @@ async function main() {
   const url = `http://127.0.0.1:${port}`;
   console.log(`Starting Portboard at ${url}`);
 
+  if (trayMode) {
+    writeState({ status: "starting", port, url, pid: null, logPath });
+    appendLog(`starting ${url}`);
+  }
+
   const child = spawn(process.execPath, [nextBinary, "start", "-H", "127.0.0.1", "-p", String(port)], {
     cwd: projectRoot,
     env: {
       ...process.env,
       PORTBOARD_SESSION_SECRET: randomBytes(32).toString("base64url"),
     },
-    stdio: "inherit",
-    windowsHide: false,
+    stdio: trayMode ? "ignore" : "inherit",
+    windowsHide: trayMode,
   });
+
+  if (trayMode) {
+    writeState({ status: "starting", port, url, pid: child.pid ?? null, logPath });
+  }
 
   let stopping = false;
   const stopChild = () => {
     if (stopping || !child.pid) return;
     stopping = true;
+    if (trayMode) {
+      writeState({ status: "stopping", port, url, pid: child.pid, logPath });
+      appendLog(`stopping pid=${child.pid}`);
+    }
     spawn("taskkill.exe", ["/PID", String(child.pid), "/T"], {
       stdio: "ignore",
       windowsHide: true,
@@ -157,19 +191,38 @@ async function main() {
   });
 
   await waitUntilReady(port, child);
-  console.log("Portboard is ready. Opening your browser...");
-  const browser = spawn("explorer.exe", [url], {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-  });
-  browser.unref();
+  if (trayMode) {
+    writeState({ status: "ready", port, url, pid: child.pid ?? null, logPath });
+    appendLog(`ready ${url} pid=${child.pid ?? "?"}`);
+    console.log(`Portboard is ready at ${url}`);
+  } else {
+    console.log("Portboard is ready. Opening your browser...");
+    const browser = spawn("explorer.exe", [url], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    browser.unref();
+  }
 
   const exitCode = await new Promise((resolve) => child.once("exit", resolve));
+  if (trayMode) {
+    writeState({ status: "stopped", port, url, pid: null, exitCode, logPath });
+    appendLog(`stopped exitCode=${exitCode}`);
+  }
   process.exitCode = typeof exitCode === "number" ? exitCode : 0;
 }
 
 main().catch((error) => {
-  console.error(`Portboard could not start: ${error instanceof Error ? error.message : error}`);
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`Portboard could not start: ${message}`);
+  if (trayMode) {
+    try {
+      writeState({ status: "error", error: message, pid: null, logPath });
+      appendLog(`error ${message}`);
+    } catch {
+      // ignore state write failures during crash paths
+    }
+  }
   process.exitCode = 1;
 });
