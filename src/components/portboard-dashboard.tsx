@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Cpu,
   GitCommitHorizontal,
+  GitPullRequest,
   LoaderCircle,
   RadioTower,
   RefreshCw,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 
 import { BackgroundWorkersView } from "@/components/background-workers-view";
+import { CheckinsView } from "@/components/checkins-view";
 import { RunningAppsView } from "@/components/running-apps-view";
 import { UncommittedProjectsView } from "@/components/uncommitted-projects-view";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -30,12 +32,13 @@ import type {
   WorkersResponse,
 } from "@/lib/apps/types";
 import type {
+  CheckinsResponse,
   GitScanWarning,
   UncommittedProject,
   UncommittedResponse,
 } from "@/lib/git/types";
 
-type DashboardView = "running" | "workers" | "uncommitted";
+type DashboardView = "running" | "workers" | "uncommitted" | "checkins";
 
 const DEFAULT_GIT_ROOTS = ["C:\\Codex", "C:\\ClaudeCode"];
 
@@ -67,6 +70,11 @@ export function PortboardDashboard() {
   const [gitError, setGitError] = useState<string | null>(null);
   const [gitRefreshing, setGitRefreshing] = useState(false);
   const gitRequestRef = useRef<AbortController | null>(null);
+
+  const [checkins, setCheckins] = useState<CheckinsResponse | null>(null);
+  const [checkinsError, setCheckinsError] = useState<string | null>(null);
+  const [checkinsRefreshing, setCheckinsRefreshing] = useState(false);
+  const checkinsRequestRef = useRef<AbortController | null>(null);
 
   const refreshRunning = useCallback(async () => {
     if (appsRequestRef.current) {
@@ -203,6 +211,46 @@ export function PortboardDashboard() {
     }
   }, []);
 
+  const refreshCheckins = useCallback(async () => {
+    if (checkinsRequestRef.current) {
+      return;
+    }
+
+    const controller = new AbortController();
+    checkinsRequestRef.current = controller;
+    setCheckinsRefreshing(true);
+
+    try {
+      const response = await fetch("/api/checkins", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const payload = (await response.json()) as CheckinsResponse & {
+        message?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(payload.message ?? "The commit history scan failed.");
+      }
+
+      setCheckins(payload);
+      setCheckinsError(null);
+    } catch (requestError) {
+      if (!isAbortError(requestError)) {
+        setCheckinsError(
+          requestError instanceof Error
+            ? requestError.message
+            : "The commit history scan failed.",
+        );
+      }
+    } finally {
+      if (checkinsRequestRef.current === controller) {
+        checkinsRequestRef.current = null;
+        setCheckinsRefreshing(false);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     if (activeView !== "running") {
       return;
@@ -281,6 +329,32 @@ export function PortboardDashboard() {
     };
   }, [activeView, refreshUncommitted]);
 
+  useEffect(() => {
+    if (activeView !== "checkins") {
+      return;
+    }
+
+    const initialRefresh = window.setTimeout(() => void refreshCheckins(), 0);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refreshCheckins();
+      }
+    }, 120_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void refreshCheckins();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      window.clearTimeout(initialRefresh);
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      checkinsRequestRef.current?.abort();
+    };
+  }, [activeView, refreshCheckins]);
+
   const view = {
     running: {
       error: appsError,
@@ -313,6 +387,19 @@ export function PortboardDashboard() {
       ),
       footer: `Scanning ${gitRoots.join(" and ")}. Git-ignored files are excluded.`,
     },
+    checkins: {
+      error: checkinsError,
+      refreshing: checkinsRefreshing,
+      lastScan: checkins?.scannedAt ?? null,
+      countLabel: `${checkins?.totals.commits ?? 0} commits`,
+      errorTitle: "Commit history unavailable",
+      warnings: (checkins?.warnings ?? []).map(
+        (warning) => `${warning.directory}: ${warning.message}`,
+      ),
+      footer: checkins
+        ? `Commits by andruuid / a.d.schaerer@gmail.com in ${checkins.repositoriesScanned} local repositories under ${checkins.roots.join(" and ")}. Lockfiles and merge commits are excluded.`
+        : "Commits by andruuid / a.d.schaerer@gmail.com in local repositories. Lockfiles and merge commits are excluded.",
+    },
   }[activeView];
 
   const activeError = view.error;
@@ -332,7 +419,9 @@ export function PortboardDashboard() {
       ? refreshRunning
       : activeView === "workers"
         ? refreshWorkers
-        : refreshUncommitted;
+        : activeView === "uncommitted"
+          ? refreshUncommitted
+          : refreshCheckins;
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col px-4 py-6 sm:px-6 lg:px-10 lg:py-10">
@@ -421,6 +510,15 @@ export function PortboardDashboard() {
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="checkins" className="h-8 min-w-40 px-3">
+            <GitPullRequest data-icon="inline-start" />
+            Github Checkinis
+            {checkins !== null && (
+              <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
+                {checkins.totals.commits}
+              </span>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         {activeError && (
@@ -455,6 +553,12 @@ export function PortboardDashboard() {
         </TabsContent>
         <TabsContent value="uncommitted" className="mt-3">
           <UncommittedProjectsView projects={projects} />
+        </TabsContent>
+        <TabsContent value="checkins" className="mt-3">
+          <CheckinsView
+            days={checkins?.days ?? null}
+            totals={checkins?.totals ?? null}
+          />
         </TabsContent>
       </Tabs>
 

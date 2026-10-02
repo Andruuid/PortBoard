@@ -27,6 +27,28 @@ export interface UncommittedResponse {
   warnings: GitScanWarning[];
 }
 
+export interface CheckinDay {
+  date: string;
+  commits: number;
+  added: number;
+  removed: number;
+}
+
+export interface CheckinTotals {
+  commits: number;
+  added: number;
+  removed: number;
+}
+
+export interface CheckinsResponse {
+  days: CheckinDay[];
+  totals: CheckinTotals;
+  repositoriesScanned: number;
+  scannedAt: string;
+  roots: string[];
+  warnings: GitScanWarning[];
+}
+
 export interface OpenProjectResponse {
   opened: boolean;
   message: string;

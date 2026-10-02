@@ -1,6 +1,5 @@
 import "server-only";
 
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   lstat,
@@ -8,17 +7,14 @@ import {
   readdir,
 } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 
+import { mapWithConcurrency, runGit } from "@/lib/git/run-git";
 import type {
   ChangeCounts,
   GitScanWarning,
   UncommittedProject,
 } from "@/lib/git/types";
 
-const execFileAsync = promisify(execFile);
-const GIT_TIMEOUT_MS = 5_000;
-const GIT_MAX_BUFFER = 8 * 1024 * 1024;
 const REPOSITORY_SCAN_CONCURRENCY = 4;
 const FILE_STAT_CONCURRENCY = 16;
 const CONFLICT_CODES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
@@ -70,27 +66,6 @@ interface GitCommandFailure extends Error {
   code?: string | number;
   killed?: boolean;
   stderr?: string;
-}
-
-async function mapWithConcurrency<T, R>(
-  values: readonly T[],
-  concurrency: number,
-  operation: (value: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(values.length);
-  let nextIndex = 0;
-
-  async function worker() {
-    while (nextIndex < values.length) {
-      const currentIndex = nextIndex;
-      nextIndex += 1;
-      results[currentIndex] = await operation(values[currentIndex], currentIndex);
-    }
-  }
-
-  const workerCount = Math.min(concurrency, values.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
-  return results;
 }
 
 function isMissingFileError(error: unknown): boolean {
@@ -222,21 +197,6 @@ export function parsePorcelainStatus(output: string): ParsedStatus {
   }
 
   return { counts, paths };
-}
-
-async function runGit(repository: string, argumentsList: string[]): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "git.exe",
-    ["-C", repository, ...argumentsList],
-    {
-      encoding: "utf8",
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-      maxBuffer: GIT_MAX_BUFFER,
-      timeout: GIT_TIMEOUT_MS,
-      windowsHide: true,
-    },
-  );
-  return stdout;
 }
 
 async function tryGit(
