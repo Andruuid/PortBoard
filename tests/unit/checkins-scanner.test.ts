@@ -1,32 +1,33 @@
 import { describe, expect, test } from "vitest";
 
-import { buildCheckinDays, parseCheckinLog } from "@/lib/git/checkins-scanner";
+import { parseCheckinLog } from "@/lib/git/checkins-scanner";
 
 function log(
-  commits: { hash: string; date: string; stats?: string[] }[],
+  commits: { hash: string; at: number; subject?: string; stats?: string[] }[],
 ): string {
   return commits
     .map(
       (commit) =>
-        `\0${commit.hash}\x1f${commit.date}\n\n${(commit.stats ?? []).join("\n")}\n`,
+        `\0${commit.hash}\x1f${commit.at}\x1f${commit.subject ?? "msg"}\n\n${(commit.stats ?? []).join("\n")}\n`,
     )
     .join("");
 }
 
 describe("parseCheckinLog", () => {
-  test("sums added and removed lines per commit", () => {
+  test("sums added and removed lines per commit and keeps the subject", () => {
     const output = log([
       {
         hash: "aaa",
-        date: "2026-10-02T09:00:00+02:00",
+        at: 1_790_000_000,
+        subject: "Add the thing",
         stats: ["10\t2\tsrc/a.ts", "5\t0\tsrc/b.ts"],
       },
-      { hash: "bbb", date: "2026-10-01T09:00:00+02:00", stats: ["1\t1\tREADME.md"] },
+      { hash: "bbb", at: 1_789_900_000, stats: ["1\t1\tREADME.md"] },
     ]);
 
     expect(parseCheckinLog(output)).toEqual([
-      { hash: "aaa", date: "2026-10-02T09:00:00+02:00", added: 15, removed: 2 },
-      { hash: "bbb", date: "2026-10-01T09:00:00+02:00", added: 1, removed: 1 },
+      { hash: "aaa", at: 1_790_000_000, added: 15, removed: 2, subject: "Add the thing" },
+      { hash: "bbb", at: 1_789_900_000, added: 1, removed: 1, subject: "msg" },
     ]);
   });
 
@@ -34,73 +35,24 @@ describe("parseCheckinLog", () => {
     const output = log([
       {
         hash: "aaa",
-        date: "2026-10-02T09:00:00+02:00",
+        at: 1_790_000_000,
         stats: ["-\t-\timage.png", "4000\t3000\tpackage-lock.json", "3\t1\tapp/yarn.lock"],
       },
     ]);
 
     expect(parseCheckinLog(output)).toEqual([
-      { hash: "aaa", date: "2026-10-02T09:00:00+02:00", added: 0, removed: 0 },
+      { hash: "aaa", at: 1_790_000_000, added: 0, removed: 0, subject: "msg" },
     ]);
   });
 
-  test("returns nothing for empty output", () => {
+  test("keeps subjects that contain the field separator", () => {
+    const output = log([{ hash: "aaa", at: 1_790_000_000, subject: "a\x1fb" }]);
+
+    expect(parseCheckinLog(output)[0].subject).toBe("a\x1fb");
+  });
+
+  test("skips records without a valid timestamp and empty output", () => {
     expect(parseCheckinLog("")).toEqual([]);
-  });
-});
-
-describe("buildCheckinDays", () => {
-  const now = new Date(2026, 9, 2, 15, 0, 0);
-
-  function at(month: number, day: number, hour = 12): string {
-    return new Date(2026, month, day, hour).toISOString();
-  }
-
-  test("always returns 30 zero-filled days ending today", () => {
-    const { days, totals } = buildCheckinDays([], now);
-
-    expect(days).toHaveLength(30);
-    expect(days[0].date).toBe("2026-09-03");
-    expect(days[29].date).toBe("2026-10-02");
-    expect(totals).toEqual({ commits: 0, added: 0, removed: 0 });
-  });
-
-  test("buckets commits by local day and totals them", () => {
-    const { days, totals } = buildCheckinDays(
-      [
-        { hash: "a", date: at(9, 2, 8), added: 10, removed: 2 },
-        { hash: "b", date: at(9, 2, 23), added: 5, removed: 5 },
-        { hash: "c", date: at(8, 3, 0), added: 1, removed: 0 },
-      ],
-      now,
-    );
-
-    expect(days[29]).toEqual({ date: "2026-10-02", commits: 2, added: 15, removed: 7 });
-    expect(days[0]).toEqual({ date: "2026-09-03", commits: 1, added: 1, removed: 0 });
-    expect(totals).toEqual({ commits: 3, added: 16, removed: 7 });
-  });
-
-  test("counts a commit hash found in several repositories once", () => {
-    const { totals } = buildCheckinDays(
-      [
-        { hash: "same", date: at(9, 1), added: 3, removed: 1 },
-        { hash: "same", date: at(9, 1), added: 3, removed: 1 },
-      ],
-      now,
-    );
-
-    expect(totals).toEqual({ commits: 1, added: 3, removed: 1 });
-  });
-
-  test("drops commits outside the 30 day window", () => {
-    const { totals } = buildCheckinDays(
-      [
-        { hash: "old", date: at(8, 2), added: 99, removed: 99 },
-        { hash: "future", date: at(9, 3), added: 99, removed: 99 },
-      ],
-      now,
-    );
-
-    expect(totals.commits).toBe(0);
+    expect(parseCheckinLog("\0aaa\x1fnot-a-number\x1fmsg\n")).toEqual([]);
   });
 });

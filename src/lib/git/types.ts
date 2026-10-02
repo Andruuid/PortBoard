@@ -27,22 +27,26 @@ export interface UncommittedResponse {
   warnings: GitScanWarning[];
 }
 
-export interface CheckinDay {
-  date: string;
-  commits: number;
+export interface CheckinCommit {
+  hash: string;
+  /** Index into CheckinsResponse.repositories. */
+  repo: number;
+  /** Author date in epoch seconds. */
+  at: number;
   added: number;
   removed: number;
+  subject: string;
 }
 
-export interface CheckinTotals {
-  commits: number;
-  added: number;
-  removed: number;
+export interface CheckinRepository {
+  name: string;
+  directory: string;
 }
 
 export interface CheckinsResponse {
-  days: CheckinDay[];
-  totals: CheckinTotals;
+  commits: CheckinCommit[];
+  repositories: CheckinRepository[];
+  windowDays: number;
   repositoriesScanned: number;
   scannedAt: string;
   roots: string[];

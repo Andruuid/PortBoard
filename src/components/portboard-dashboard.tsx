@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Cpu,
@@ -31,6 +31,7 @@ import type {
   RunningApp,
   WorkersResponse,
 } from "@/lib/apps/types";
+import { countCommitsSince } from "@/lib/git/checkin-stats";
 import type {
   CheckinsResponse,
   GitScanWarning,
@@ -75,6 +76,13 @@ export function PortboardDashboard() {
   const [checkinsError, setCheckinsError] = useState<string | null>(null);
   const [checkinsRefreshing, setCheckinsRefreshing] = useState(false);
   const checkinsRequestRef = useRef<AbortController | null>(null);
+  const recentCheckins = useMemo(
+    () =>
+      checkins
+        ? countCommitsSince(checkins.commits, 30, new Date(checkins.scannedAt))
+        : 0,
+    [checkins],
+  );
 
   const refreshRunning = useCallback(async () => {
     if (appsRequestRef.current) {
@@ -391,13 +399,13 @@ export function PortboardDashboard() {
       error: checkinsError,
       refreshing: checkinsRefreshing,
       lastScan: checkins?.scannedAt ?? null,
-      countLabel: `${checkins?.totals.commits ?? 0} commits`,
+      countLabel: `${recentCheckins} commits / 30d`,
       errorTitle: "Commit history unavailable",
       warnings: (checkins?.warnings ?? []).map(
         (warning) => `${warning.directory}: ${warning.message}`,
       ),
       footer: checkins
-        ? `Commits by andruuid / a.d.schaerer@gmail.com in ${checkins.repositoriesScanned} local repositories under ${checkins.roots.join(" and ")}. Lockfiles and merge commits are excluded.`
+        ? `Commits by andruuid / a.d.schaerer@gmail.com in ${checkins.repositoriesScanned} local repositories under ${checkins.roots.join(" and ")}, last ${checkins.windowDays} days. Lockfiles and merge commits are excluded.`
         : "Commits by andruuid / a.d.schaerer@gmail.com in local repositories. Lockfiles and merge commits are excluded.",
     },
   }[activeView];
@@ -515,7 +523,7 @@ export function PortboardDashboard() {
             Github Checkinis
             {checkins !== null && (
               <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
-                {checkins.totals.commits}
+                {recentCheckins}
               </span>
             )}
           </TabsTrigger>
@@ -555,10 +563,7 @@ export function PortboardDashboard() {
           <UncommittedProjectsView projects={projects} />
         </TabsContent>
         <TabsContent value="checkins" className="mt-3">
-          <CheckinsView
-            days={checkins?.days ?? null}
-            totals={checkins?.totals ?? null}
-          />
+          <CheckinsView data={checkins} />
         </TabsContent>
       </Tabs>
 

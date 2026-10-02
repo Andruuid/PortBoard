@@ -1,20 +1,29 @@
 import "server-only";
 
-import { discoverGitRepositories, UNCOMMITTED_ROOTS } from "@/lib/git/uncommitted-scanner";
+import path from "node:path";
+
 import { mapWithConcurrency, runGit } from "@/lib/git/run-git";
 import type {
-  CheckinDay,
+  CheckinCommit,
+  CheckinRepository,
   CheckinsResponse,
-  CheckinTotals,
   GitScanWarning,
 } from "@/lib/git/types";
+import {
+  discoverGitRepositories,
+  UNCOMMITTED_ROOTS,
+} from "@/lib/git/uncommitted-scanner";
 
-export const CHECKIN_DAYS = 30;
+export const CHECKIN_WINDOW_DAYS = 365;
 export const CHECKIN_AUTHORS = ["a.d.schaerer@gmail.com", "andruuid"] as const;
 
 const REPOSITORY_SCAN_CONCURRENCY = 4;
-const LOG_TIMEOUT_MS = 30_000;
+const LOG_TIMEOUT_MS = 120_000;
 const LOG_MAX_BUFFER = 64 * 1024 * 1024;
+const MAX_SUBJECT_LENGTH = 200;
+// Commit stats never change, so only recent history is re-read between scans.
+const FULL_RESCAN_MS = 6 * 60 * 60 * 1000;
+const INCREMENTAL_OVERLAP_MS = 7 * 24 * 60 * 60 * 1000;
 const LOCKFILE_NAMES = new Set([
   "package-lock.json",
   "pnpm-lock.yaml",
@@ -25,17 +34,42 @@ const LOCKFILE_NAMES = new Set([
 
 export interface ParsedCheckin {
   hash: string;
-  date: string;
+  at: number;
   added: number;
   removed: number;
+  subject: string;
+}
+
+interface CachedCheckin extends ParsedCheckin {
+  directory: string;
+}
+
+interface CheckinCache {
+  commits: Map<string, CachedCheckin>;
+  lastScanAt: number;
+  lastFullScanAt: number;
 }
 
 export type CheckinsScanResult = Omit<CheckinsResponse, "scannedAt">;
+
+export interface ScanCheckinsOptions {
+  /** Ignore cached history and read the whole window again. */
+  fullRescan?: boolean;
+}
 
 interface GitCommandFailure extends Error {
   code?: string | number;
   killed?: boolean;
   stderr?: string;
+}
+
+const cacheStore = globalThis as typeof globalThis & {
+  __portboardCheckinCaches?: Map<string, CheckinCache>;
+};
+
+function getCaches(): Map<string, CheckinCache> {
+  cacheStore.__portboardCheckinCaches ??= new Map();
+  return cacheStore.__portboardCheckinCaches;
 }
 
 function isLockfile(changedPath: string): boolean {
@@ -48,8 +82,9 @@ export function parseCheckinLog(output: string): ParsedCheckin[] {
 
   for (const record of output.split("\0")) {
     const [header, ...lines] = record.split(/\r?\n/);
-    const [hash, date] = (header ?? "").split("\x1f");
-    if (!hash || !date) {
+    const [hash, atText, ...subjectParts] = (header ?? "").split("\x1f");
+    const at = Number(atText);
+    if (!hash || !Number.isFinite(at)) {
       continue;
     }
 
@@ -65,72 +100,30 @@ export function parseCheckinLog(output: string): ParsedCheckin[] {
       removed += Number.parseInt(removedText, 10) || 0;
     }
 
-    checkins.push({ hash, date, added, removed });
+    checkins.push({
+      hash,
+      at,
+      added,
+      removed,
+      subject: subjectParts.join("\x1f").trim().slice(0, MAX_SUBJECT_LENGTH),
+    });
   }
 
   return checkins;
 }
 
-function toLocalDateKey(date: Date): string {
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${date.getFullYear()}-${month}-${day}`;
-}
-
 export function getWindowStart(now: Date): Date {
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate() - (CHECKIN_DAYS - 1));
-}
-
-export function buildCheckinDays(
-  checkins: readonly ParsedCheckin[],
-  now: Date,
-): { days: CheckinDay[]; totals: CheckinTotals } {
-  const start = getWindowStart(now);
-  const days = new Map<string, CheckinDay>();
-  for (let offset = 0; offset < CHECKIN_DAYS; offset += 1) {
-    const date = toLocalDateKey(
-      new Date(start.getFullYear(), start.getMonth(), start.getDate() + offset),
-    );
-    days.set(date, { date, commits: 0, added: 0, removed: 0 });
-  }
-
-  const seen = new Set<string>();
-  for (const checkin of checkins) {
-    if (seen.has(checkin.hash)) {
-      continue;
-    }
-    seen.add(checkin.hash);
-
-    const committedAt = new Date(checkin.date);
-    if (Number.isNaN(committedAt.getTime())) {
-      continue;
-    }
-    const day = days.get(toLocalDateKey(committedAt));
-    if (!day) {
-      continue;
-    }
-    day.commits += 1;
-    day.added += checkin.added;
-    day.removed += checkin.removed;
-  }
-
-  const orderedDays = [...days.values()];
-  const totals = orderedDays.reduce<CheckinTotals>(
-    (sum, day) => ({
-      commits: sum.commits + day.commits,
-      added: sum.added + day.added,
-      removed: sum.removed + day.removed,
-    }),
-    { commits: 0, added: 0, removed: 0 },
+  return new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate() - (CHECKIN_WINDOW_DAYS - 1),
   );
-
-  return { days: orderedDays, totals };
 }
 
 function formatGitError(error: unknown): string {
   const failure = error as GitCommandFailure;
   if (failure.killed || failure.code === "ETIMEDOUT") {
-    return "Git log timed out after thirty seconds.";
+    return "Git log timed out after two minutes.";
   }
 
   const details = failure.stderr?.trim().split(/\r?\n/, 1)[0];
@@ -151,7 +144,7 @@ async function readRepositoryCheckins(
         `--since=${since}`,
         ...CHECKIN_AUTHORS.map((author) => `--author=${author}`),
         "--numstat",
-        "--format=%x00%H%x1f%aI",
+        "--format=%x00%H%x1f%at%x1f%s",
       ],
       { timeoutMs: LOG_TIMEOUT_MS, maxBuffer: LOG_MAX_BUFFER },
     );
@@ -169,30 +162,114 @@ async function readRepositoryCheckins(
   }
 }
 
+function buildRepositories(directories: readonly string[]): CheckinRepository[] {
+  const baseNameCounts = new Map<string, number>();
+  for (const directory of directories) {
+    const name = path.basename(directory).toLowerCase();
+    baseNameCounts.set(name, (baseNameCounts.get(name) ?? 0) + 1);
+  }
+
+  return directories.map((directory) => {
+    const baseName = path.basename(directory);
+    const isAmbiguous = (baseNameCounts.get(baseName.toLowerCase()) ?? 0) > 1;
+    const name = isAmbiguous
+      ? `${path.basename(path.dirname(directory))}/${baseName}`
+      : baseName;
+    return { name, directory };
+  });
+}
+
 export async function scanCheckins(
   roots: readonly string[] = UNCOMMITTED_ROOTS,
   now: Date = new Date(),
+  options: ScanCheckinsOptions = {},
 ): Promise<CheckinsScanResult> {
   if (process.platform !== "win32") {
     throw new Error("The Github Checkinis view currently supports Windows only.");
   }
 
-  const since = getWindowStart(now).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const windowStart = getWindowStart(now);
+  const caches = getCaches();
+  const cacheKey = roots.join("|").toLowerCase();
+  const previous = caches.get(cacheKey);
+  const isFullScan =
+    options.fullRescan === true ||
+    !previous ||
+    now.getTime() - previous.lastFullScanAt > FULL_RESCAN_MS;
+
+  const sinceDate =
+    isFullScan || !previous
+      ? windowStart
+      : new Date(
+          Math.max(
+            windowStart.getTime(),
+            previous.lastScanAt - INCREMENTAL_OVERLAP_MS,
+          ),
+        );
+  const since = sinceDate.toISOString().replace(/\.\d{3}Z$/, "Z");
+
   const discovery = await discoverGitRepositories(roots);
   const results = await mapWithConcurrency(
     discovery.repositories,
     REPOSITORY_SCAN_CONCURRENCY,
-    (repository) => readRepositoryCheckins(repository, since),
+    async (repository) => ({
+      repository,
+      ...(await readRepositoryCheckins(repository, since)),
+    }),
   );
 
-  const { days, totals } = buildCheckinDays(
-    results.flatMap((result) => result.checkins),
-    now,
+  const commits = new Map<string, CachedCheckin>(
+    isFullScan || !previous ? [] : previous.commits,
+  );
+  for (const result of results) {
+    for (const checkin of result.checkins) {
+      // The same commit can live in several clones or worktrees; keep the first.
+      if (!commits.has(checkin.hash)) {
+        commits.set(checkin.hash, { ...checkin, directory: result.repository });
+      }
+    }
+  }
+  for (const [hash, commit] of commits) {
+    if (commit.at * 1000 < windowStart.getTime()) {
+      commits.delete(hash);
+    }
+  }
+
+  caches.set(cacheKey, {
+    commits,
+    lastScanAt: now.getTime(),
+    lastFullScanAt:
+      isFullScan || !previous ? now.getTime() : previous.lastFullScanAt,
+  });
+
+  const repositories = buildRepositories(discovery.repositories);
+  const repositoryIndex = new Map(
+    discovery.repositories.map((directory, index) => [directory, index]),
+  );
+  const orderedCommits: CheckinCommit[] = [];
+  for (const commit of commits.values()) {
+    const repo = repositoryIndex.get(commit.directory);
+    if (repo === undefined) {
+      continue;
+    }
+    orderedCommits.push({
+      hash: commit.hash,
+      repo,
+      at: commit.at,
+      added: commit.added,
+      removed: commit.removed,
+      subject: commit.subject,
+    });
+  }
+  // Hash as tie-breaker keeps commits with identical timestamps in a stable order.
+  orderedCommits.sort(
+    (left, right) => right.at - left.at || left.hash.localeCompare(right.hash),
   );
 
   return {
-    days,
-    totals,
+    commits: orderedCommits,
+    repositories,
+    windowDays: CHECKIN_WINDOW_DAYS,
     repositoriesScanned: discovery.repositories.length,
     roots: [...roots],
     warnings: [
@@ -200,4 +277,8 @@ export async function scanCheckins(
       ...results.flatMap((result) => (result.warning ? [result.warning] : [])),
     ],
   };
+}
+
+export function clearCheckinCaches(): void {
+  getCaches().clear();
 }
