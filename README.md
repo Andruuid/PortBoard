@@ -1,4 +1,4 @@
-# Portboard
+﻿# Portboard
 
 Portboard is a private Windows dashboard for the Next.js, Node.js, and Bun apps
 currently listening on your machine. It shows each app's port, package name,
@@ -39,6 +39,17 @@ The launcher installs or rebuilds only when necessary, chooses the first free po
 from `43110` through `43119`, binds to `127.0.0.1`, and opens the dashboard in your
 default browser.
 
+
+## Start in the system tray (Windows)
+
+Double-click `start-portboard-tray.cmd` (or run it from Explorer). Portboard starts hidden and shows a tray icon with:
+
+- **Open dashboard**
+- **Restart**
+- **Quit** (stops Portboard)
+
+The classic console launcher `start-portboard.cmd` still works when you want a visible terminal.
+
 ## How discovery works
 
 - Reads Windows TCP listeners, established connections, and process ancestry
@@ -69,3 +80,4 @@ npm run build
 
 The development server uses `http://127.0.0.1:43110`. The production launcher is
 the recommended day-to-day entry point.
+

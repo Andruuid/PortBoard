@@ -12,6 +12,7 @@ import {
 import { Fragment, useState } from "react";
 
 import { AppActions } from "@/components/app-actions";
+import { GroupStopActions } from "@/components/group-stop-actions";
 import { PortRoleBadge } from "@/components/port-role-badge";
 import { RunningAppCard } from "@/components/running-app-card";
 import { RuntimeBadge } from "@/components/runtime-badge";
@@ -327,8 +328,8 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
                           </span>
                         </div>
                       </TableCell>
-                      <TableCell className="pr-5 text-right text-xs text-muted-foreground">
-                        {expanded ? "Expanded" : "Collapsed"}
+                      <TableCell className="pr-5">
+                        <GroupStopActions apps={group.apps} onStopped={onStopped} />
                       </TableCell>
                     </TableRow>
                     {expanded &&
@@ -413,6 +414,9 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
                       <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                     )}
                   </Button>
+                  <div className="mt-3 flex justify-end border-t border-border/60 pt-3">
+                    <GroupStopActions apps={group.apps} onStopped={onStopped} />
+                  </div>
                 </CardContent>
               </Card>
               {expanded && (

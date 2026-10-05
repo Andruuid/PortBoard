@@ -49,6 +49,7 @@ function isAbortError(error: unknown): boolean {
 
 export function PortboardDashboard() {
   const [activeView, setActiveView] = useState<DashboardView>("running");
+  const [portboardPort, setPortboardPort] = useState<number | null>(null);
 
   const [apps, setApps] = useState<RunningApp[] | null>(null);
   const [appWarnings, setAppWarnings] = useState<string[]>([]);
@@ -363,6 +364,21 @@ export function PortboardDashboard() {
     };
   }, [activeView, refreshCheckins]);
 
+  useEffect(() => {
+    const fetchPortboardPort = async () => {
+      try {
+        const response = await fetch("/api/health", { cache: "no-store" });
+        if (response.ok) {
+          const data = (await response.json()) as { status: string; port: number };
+          setPortboardPort(data.port);
+        }
+      } catch {
+        // Port fetch is not critical, silently ignore errors
+      }
+    };
+    void fetchPortboardPort();
+  }, []);
+
   const view = {
     running: {
       error: appsError,
@@ -372,7 +388,7 @@ export function PortboardDashboard() {
       errorTitle: "Scan unavailable",
       warnings: appWarnings,
       footer:
-        "Only same-user Node.js and Bun listeners are shown. Portboard cannot close itself.",
+        "Only same-user Node.js and Bun listeners are shown.",
     },
     workers: {
       error: workersError,
@@ -445,6 +461,14 @@ export function PortboardDashboard() {
             >
               Windows local
             </Badge>
+            {portboardPort !== null && (
+              <Badge
+                variant="outline"
+                className="border-emerald-500/30 bg-emerald-500/10 font-mono text-emerald-600 dark:text-emerald-400"
+              >
+                Running on port {portboardPort}
+              </Badge>
+            )}
           </div>
           <h1 className="text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">
             Portboard

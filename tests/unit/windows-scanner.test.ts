@@ -259,6 +259,40 @@ describe("Windows listener discovery", () => {
     ).resolves.toEqual([]);
   });
 
+  test("excludes descendant processes of the protected process", async () => {
+    const portboard = processInfo(1000, 1, "node.exe", "node next start -H 127.0.0.1 -p 43110");
+    const portboardWorker = processInfo(
+      1001,
+      1000,
+      "node.exe",
+      "node node_modules/next/dist/server/lib/start-server.js",
+    );
+    const userApp = processInfo(2000, 1, "node.exe", "node server.js");
+
+    const snapshot: WindowsSnapshot = {
+      currentIdentity: "WORKSTATION\\developer",
+      listeners: [
+        { localAddress: "127.0.0.1", localPort: 43110, owningProcess: 1001 },
+        { localAddress: "127.0.0.1", localPort: 3000, owningProcess: 2000 },
+      ],
+      processes: [portboard, portboardWorker, userApp],
+      owners: {
+        "1000": "WORKSTATION\\developer",
+        "1001": "WORKSTATION\\developer",
+        "2000": "WORKSTATION\\developer",
+      },
+    };
+
+    const apps = await buildAppsFromSnapshot(snapshot, {
+      protectedPid: 1000,
+      skipProtocolProbe: true,
+    });
+
+    expect(apps).toHaveLength(1);
+    expect(apps[0].port).toBe(3000);
+    expect(apps[0].pid).toBe(2000);
+  });
+
   test("identifies MailDev ports, the primary Next app, and an internal build channel", async () => {
     const projectRoot = path.resolve("tests", "fixtures", "sample-node-app");
     const maildev = processInfo(
