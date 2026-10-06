@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import { LoaderCircle, Square } from "lucide-react";
 import { toast } from "sonner";
 
+import { useStopTasks } from "@/components/stop-tasks-provider";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,7 +16,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import type { BackgroundWorker, StopWorkerResponse } from "@/lib/apps/types";
+import { workerStopKey } from "@/lib/apps/pending-stops";
+import { requestWorkerStop } from "@/lib/apps/stop-client";
+import type { BackgroundWorker } from "@/lib/apps/types";
 
 interface WorkerActionsProps {
   worker: BackgroundWorker;
@@ -28,51 +30,42 @@ export function workerLabel(worker: BackgroundWorker): string {
 }
 
 export function WorkerActions({ worker, onStopped }: WorkerActionsProps) {
-  const [open, setOpen] = useState(false);
-  const [stopping, setStopping] = useState(false);
+  const { isStopping, track } = useStopTasks();
+  const stopping = isStopping(workerStopKey(worker.id));
   const label = workerLabel(worker);
 
+  // Runs after the dialog has closed; must not depend on this row staying mounted.
   async function stopWorker() {
-    setStopping(true);
+    const { ok, payload } = await requestWorkerStop(worker.id);
 
-    try {
-      const response = await fetch("/api/workers/stop", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: worker.id }),
-      });
-      const payload = (await response.json()) as Partial<StopWorkerResponse> & {
-        message?: string;
-      };
-
-      if (!response.ok || !payload.stopped) {
-        throw new Error(payload.message ?? "Windows could not stop this worker.");
-      }
-
-      toast.success(payload.message ?? `${label} stopped.`);
-      setOpen(false);
-      onStopped();
-    } catch (error) {
+    if (!ok) {
       toast.error("Could not stop the worker", {
-        description:
-          error instanceof Error ? error.message : "The stop request failed.",
+        description: payload.message ?? "Windows could not stop this worker.",
       });
-    } finally {
-      setStopping(false);
+      return;
     }
+
+    toast.success(payload.message ?? `${label} stopped.`);
+    onStopped();
   }
 
   return (
     <div className="flex items-center justify-end">
-      <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialog>
         <AlertDialogTrigger asChild>
           <Button
             size="sm"
             variant="destructive"
-            aria-label={`Stop ${label} in ${worker.projectName}`}
+            disabled={stopping}
+            aria-busy={stopping}
+            aria-label={`${stopping ? "Stopping" : "Stop"} ${label} in ${worker.projectName}`}
           >
-            <Square data-icon="inline-start" />
-            Stop
+            {stopping ? (
+              <LoaderCircle className="animate-spin" data-icon="inline-start" />
+            ) : (
+              <Square data-icon="inline-start" />
+            )}
+            {stopping ? "Stopping…" : "Stop"}
           </Button>
         </AlertDialogTrigger>
         <AlertDialogContent>
@@ -96,21 +89,13 @@ export function WorkerActions({ worker, onStopped }: WorkerActionsProps) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={stopping}>Keep running</AlertDialogCancel>
+            <AlertDialogCancel>Keep running</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              disabled={stopping}
-              onClick={(event) => {
-                event.preventDefault();
-                void stopWorker();
-              }}
+              onClick={() => void track([workerStopKey(worker.id)], stopWorker)}
             >
-              {stopping ? (
-                <LoaderCircle className="animate-spin" data-icon="inline-start" />
-              ) : (
-                <Square data-icon="inline-start" />
-              )}
-              {stopping ? "Stopping…" : "Stop worker"}
+              <Square data-icon="inline-start" />
+              Stop worker
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

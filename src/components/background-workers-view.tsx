@@ -1,9 +1,18 @@
 "use client";
 
-import { Activity, Clock3, Cpu, Folder, GitBranch, Layers3 } from "lucide-react";
+import {
+  Activity,
+  Clock3,
+  Cpu,
+  Folder,
+  GitBranch,
+  Layers3,
+  LoaderCircle,
+} from "lucide-react";
 
 import { WorkerActions, workerLabel } from "@/components/worker-actions";
 import { RuntimeBadge } from "@/components/runtime-badge";
+import { useStopTasks } from "@/components/stop-tasks-provider";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -15,6 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { workerStopKey } from "@/lib/apps/pending-stops";
 import type { BackgroundWorker } from "@/lib/apps/types";
 
 interface BackgroundWorkersViewProps {
@@ -94,6 +104,18 @@ function NoWorkers() {
   );
 }
 
+function stoppingClass(stopping: boolean): string {
+  return stopping ? "opacity-50 transition-opacity" : "transition-opacity";
+}
+
+function WorkerIcon({ stopping, className }: { stopping: boolean; className: string }) {
+  return stopping ? (
+    <LoaderCircle className={`${className} animate-spin text-amber-300`} aria-hidden="true" />
+  ) : (
+    <Cpu className={`${className} text-muted-foreground`} aria-hidden="true" />
+  );
+}
+
 function WorkerCard({
   worker,
   onStopped,
@@ -101,10 +123,14 @@ function WorkerCard({
   worker: BackgroundWorker;
   onStopped: () => void;
 }) {
+  const { isStopping } = useStopTasks();
+  const stopping = isStopping(workerStopKey(worker.id));
+  const dim = stoppingClass(stopping);
+
   return (
-    <Card className="border-border/80 bg-card/92 py-0 shadow-black/20">
+    <Card className="border-border/80 bg-card/92 py-0 shadow-black/20" aria-busy={stopping}>
       <CardContent className="space-y-4 p-4">
-        <div className="flex items-start justify-between gap-3">
+        <div className={`flex items-start justify-between gap-3 ${dim}`}>
           <div className="min-w-0">
             <div className="mb-1 flex flex-wrap items-center gap-2">
               <span className="truncate font-mono text-sm font-semibold text-primary">
@@ -117,10 +143,10 @@ function WorkerCard({
             </div>
             <h2 className="truncate font-medium">{worker.projectName}</h2>
           </div>
-          <Cpu className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <WorkerIcon stopping={stopping} className="mt-1 size-4 shrink-0" />
         </div>
 
-        <div className="space-y-2 text-xs text-muted-foreground">
+        <div className={`space-y-2 text-xs text-muted-foreground ${dim}`}>
           <ActivityCell worker={worker} />
           <div className="flex min-w-0 items-center gap-2">
             <Folder className="size-3.5 shrink-0" aria-hidden="true" />
@@ -141,6 +167,72 @@ function WorkerCard({
         <WorkerActions worker={worker} onStopped={onStopped} />
       </CardContent>
     </Card>
+  );
+}
+
+function WorkerRow({
+  worker,
+  onStopped,
+}: {
+  worker: BackgroundWorker;
+  onStopped: () => void;
+}) {
+  const { isStopping } = useStopTasks();
+  const stopping = isStopping(workerStopKey(worker.id));
+  const dim = stoppingClass(stopping);
+
+  return (
+    <TableRow className="border-border/60 bg-background/20" aria-busy={stopping}>
+      <TableCell className="pl-5">
+        <div className="flex max-w-56 flex-wrap items-center gap-2">
+          <WorkerIcon stopping={stopping} className="size-3.5 shrink-0" />
+          <span
+            className={`truncate font-mono font-medium ${dim}`}
+            title={workerLabel(worker)}
+          >
+            {workerLabel(worker)}
+          </span>
+          <RuntimeBadge runtime={worker.runtime} />
+        </div>
+        <span className={`mt-1 block font-mono text-[0.68rem] text-muted-foreground ${dim}`}>
+          PID {worker.pid} · {worker.processCount}{" "}
+          {worker.processCount === 1 ? "process" : "processes"}
+        </span>
+      </TableCell>
+      <TableCell className={dim}>
+        <span className="block max-w-48 truncate font-medium" title={worker.projectName}>
+          {worker.projectName}
+        </span>
+        <span className="mt-1 flex items-center gap-1.5 text-[0.68rem] text-muted-foreground">
+          <GitBranch className="size-3" aria-hidden="true" />
+          <span className="max-w-32 truncate font-mono">
+            {worker.gitBranch ?? "—"}
+          </span>
+        </span>
+      </TableCell>
+      <TableCell className={dim}>
+        <div className="flex max-w-[30rem] items-center gap-2 text-xs text-muted-foreground">
+          <Folder className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="truncate font-mono" title={worker.projectRoot}>
+            {worker.projectRoot}
+          </span>
+        </div>
+      </TableCell>
+      <TableCell className={dim}>
+        <ActivityCell worker={worker} />
+      </TableCell>
+      <TableCell className={dim}>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Clock3 className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="font-mono" title={worker.startedAt ?? undefined}>
+            {formatUptime(worker.startedAt)}
+          </span>
+        </div>
+      </TableCell>
+      <TableCell className="pr-5">
+        <WorkerActions worker={worker} onStopped={onStopped} />
+      </TableCell>
+    </TableRow>
   );
 }
 
@@ -173,60 +265,7 @@ export function BackgroundWorkersView({
             </TableHeader>
             <TableBody>
               {workers.map((worker) => (
-                <TableRow
-                  key={worker.id}
-                  className="border-border/60 bg-background/20"
-                >
-                  <TableCell className="pl-5">
-                    <div className="flex max-w-56 flex-wrap items-center gap-2">
-                      <Cpu className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                      <span
-                        className="truncate font-mono font-medium"
-                        title={workerLabel(worker)}
-                      >
-                        {workerLabel(worker)}
-                      </span>
-                      <RuntimeBadge runtime={worker.runtime} />
-                    </div>
-                    <span className="mt-1 block font-mono text-[0.68rem] text-muted-foreground">
-                      PID {worker.pid} · {worker.processCount}{" "}
-                      {worker.processCount === 1 ? "process" : "processes"}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="block max-w-48 truncate font-medium" title={worker.projectName}>
-                      {worker.projectName}
-                    </span>
-                    <span className="mt-1 flex items-center gap-1.5 text-[0.68rem] text-muted-foreground">
-                      <GitBranch className="size-3" aria-hidden="true" />
-                      <span className="max-w-32 truncate font-mono">
-                        {worker.gitBranch ?? "—"}
-                      </span>
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex max-w-[30rem] items-center gap-2 text-xs text-muted-foreground">
-                      <Folder className="size-3.5 shrink-0" aria-hidden="true" />
-                      <span className="truncate font-mono" title={worker.projectRoot}>
-                        {worker.projectRoot}
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <ActivityCell worker={worker} />
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Clock3 className="size-3.5 shrink-0" aria-hidden="true" />
-                      <span className="font-mono" title={worker.startedAt ?? undefined}>
-                        {formatUptime(worker.startedAt)}
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell className="pr-5">
-                    <WorkerActions worker={worker} onStopped={onStopped} />
-                  </TableCell>
-                </TableRow>
+                <WorkerRow key={worker.id} worker={worker} onStopped={onStopped} />
               ))}
             </TableBody>
           </Table>

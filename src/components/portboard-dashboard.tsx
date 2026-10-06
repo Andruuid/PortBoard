@@ -15,6 +15,7 @@ import {
 import { BackgroundWorkersView } from "@/components/background-workers-view";
 import { CheckinsView } from "@/components/checkins-view";
 import { RunningAppsView } from "@/components/running-apps-view";
+import { StopTasksProvider } from "@/components/stop-tasks-provider";
 import { UncommittedProjectsView } from "@/components/uncommitted-projects-view";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +46,12 @@ const DEFAULT_GIT_ROOTS = ["C:\\Codex", "C:\\ClaudeCode"];
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
+}
+
+interface RefreshOptions {
+  // Supersede an in-flight scan instead of skipping. Used after a stop, since a
+  // scan started before the kill would still report the stopped process.
+  force?: boolean;
 }
 
 export function PortboardDashboard() {
@@ -85,9 +92,12 @@ export function PortboardDashboard() {
     [checkins],
   );
 
-  const refreshRunning = useCallback(async () => {
+  const refreshRunning = useCallback(async ({ force = false }: RefreshOptions = {}) => {
     if (appsRequestRef.current) {
-      return;
+      if (!force) {
+        return;
+      }
+      appsRequestRef.current.abort();
     }
 
     const controller = new AbortController();
@@ -129,9 +139,12 @@ export function PortboardDashboard() {
     }
   }, []);
 
-  const refreshWorkers = useCallback(async () => {
+  const refreshWorkers = useCallback(async ({ force = false }: RefreshOptions = {}) => {
     if (workersRequestRef.current) {
-      return;
+      if (!force) {
+        return;
+      }
+      workersRequestRef.current.abort();
     }
 
     const controller = new AbortController();
@@ -509,87 +522,92 @@ export function PortboardDashboard() {
         </div>
       </header>
 
-      <Tabs
-        value={activeView}
-        onValueChange={(value) => setActiveView(value as DashboardView)}
-        className="flex-1"
-      >
-        <TabsList className="h-10 w-full justify-start border border-border/70 bg-card/65 p-1 sm:w-fit">
-          <TabsTrigger value="running" className="h-8 min-w-32 px-3">
-            <RadioTower data-icon="inline-start" />
-            Running
-            {apps !== null && (
-              <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
-                {apps.length}
-              </span>
-            )}
-          </TabsTrigger>
-          <TabsTrigger value="workers" className="h-8 min-w-36 px-3">
-            <Cpu data-icon="inline-start" />
-            Background
-            {workers !== null && (
-              <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
-                {workers.length}
-              </span>
-            )}
-          </TabsTrigger>
-          <TabsTrigger value="uncommitted" className="h-8 min-w-36 px-3">
-            <GitCommitHorizontal data-icon="inline-start" />
-            Uncommitted
-            {projects !== null && (
-              <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
-                {projects.length}
-              </span>
-            )}
-          </TabsTrigger>
-          <TabsTrigger value="checkins" className="h-8 min-w-40 px-3">
-            <GitPullRequest data-icon="inline-start" />
-            Github Checkinis
-            {checkins !== null && (
-              <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
-                {recentCheckins}
-              </span>
-            )}
-          </TabsTrigger>
-        </TabsList>
+      <StopTasksProvider>
+        <Tabs
+          value={activeView}
+          onValueChange={(value) => setActiveView(value as DashboardView)}
+          className="flex-1"
+        >
+          <TabsList className="h-10 w-full justify-start border border-border/70 bg-card/65 p-1 sm:w-fit">
+            <TabsTrigger value="running" className="h-8 min-w-32 px-3">
+              <RadioTower data-icon="inline-start" />
+              Running
+              {apps !== null && (
+                <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
+                  {apps.length}
+                </span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="workers" className="h-8 min-w-36 px-3">
+              <Cpu data-icon="inline-start" />
+              Background
+              {workers !== null && (
+                <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
+                  {workers.length}
+                </span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="uncommitted" className="h-8 min-w-36 px-3">
+              <GitCommitHorizontal data-icon="inline-start" />
+              Uncommitted
+              {projects !== null && (
+                <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
+                  {projects.length}
+                </span>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="checkins" className="h-8 min-w-40 px-3">
+              <GitPullRequest data-icon="inline-start" />
+              Github Checkinis
+              {checkins !== null && (
+                <span className="ml-1 font-mono text-[0.65rem] text-muted-foreground">
+                  {recentCheckins}
+                </span>
+              )}
+            </TabsTrigger>
+          </TabsList>
 
-        {activeError && (
-          <Alert variant="destructive" className="mt-3 bg-destructive/8">
-            <AlertTriangle />
-            <AlertTitle>{view.errorTitle}</AlertTitle>
-            <AlertDescription>{activeError}</AlertDescription>
-          </Alert>
-        )}
+          {activeError && (
+            <Alert variant="destructive" className="mt-3 bg-destructive/8">
+              <AlertTriangle />
+              <AlertTitle>{view.errorTitle}</AlertTitle>
+              <AlertDescription>{activeError}</AlertDescription>
+            </Alert>
+          )}
 
-        {activeWarningMessages.length > 0 && (
-          <Alert className="mt-3 bg-card/80">
-            <AlertTriangle />
-            <AlertTitle>Some details were unavailable</AlertTitle>
-            <AlertDescription>
-              {activeWarningMessages.slice(0, 3).join(" ")}
-              {activeWarningMessages.length > 3
-                ? ` Plus ${activeWarningMessages.length - 3} more.`
-                : ""}
-            </AlertDescription>
-          </Alert>
-        )}
+          {activeWarningMessages.length > 0 && (
+            <Alert className="mt-3 bg-card/80">
+              <AlertTriangle />
+              <AlertTitle>Some details were unavailable</AlertTitle>
+              <AlertDescription>
+                {activeWarningMessages.slice(0, 3).join(" ")}
+                {activeWarningMessages.length > 3
+                  ? ` Plus ${activeWarningMessages.length - 3} more.`
+                  : ""}
+              </AlertDescription>
+            </Alert>
+          )}
 
-        <TabsContent value="running" className="mt-3">
-          <RunningAppsView apps={apps} onStopped={() => void refreshRunning()} />
-        </TabsContent>
-        <TabsContent value="workers" className="mt-3">
-          <BackgroundWorkersView
-            workers={workers}
-            onStopped={() => void refreshWorkers()}
-          />
-        </TabsContent>
-        <TabsContent value="uncommitted" className="mt-3">
-          <UncommittedProjectsView projects={projects} />
-        </TabsContent>
-        <TabsContent value="checkins" className="mt-3">
-          <CheckinsView data={checkins} />
-        </TabsContent>
-      </Tabs>
+          <TabsContent value="running" className="mt-3">
+            <RunningAppsView
+              apps={apps}
+              onStopped={() => void refreshRunning({ force: true })}
+            />
+          </TabsContent>
+          <TabsContent value="workers" className="mt-3">
+            <BackgroundWorkersView
+              workers={workers}
+              onStopped={() => void refreshWorkers({ force: true })}
+            />
+          </TabsContent>
+          <TabsContent value="uncommitted" className="mt-3">
+            <UncommittedProjectsView projects={projects} />
+          </TabsContent>
+          <TabsContent value="checkins" className="mt-3">
+            <CheckinsView data={checkins} />
+          </TabsContent>
+        </Tabs>
+      </StopTasksProvider>
 
       <footer className="mt-auto pt-8 text-center font-mono text-[0.68rem] leading-5 text-muted-foreground/70">
         {view.footer}

@@ -110,7 +110,10 @@ export function ChartTooltipProvider({ children }: { children: ReactNode }) {
 
     const onPointerMove = (event: PointerEvent) => {
       if (!anchor.isConnected || !(event.target instanceof Node && anchor.contains(event.target))) {
-        setState(null);
+        // Between adjacent anchors the browser fires mouseenter on the next
+        // one before this pointermove, so the tooltip may already belong to
+        // a new anchor; only close it if it is still ours.
+        setState((current) => (current?.anchor === anchor ? null : current));
       }
     };
     document.addEventListener("pointermove", onPointerMove);

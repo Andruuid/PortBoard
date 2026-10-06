@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import { LoaderCircle, Square } from "lucide-react";
 import { toast } from "sonner";
 
+import { useStopTasks } from "@/components/stop-tasks-provider";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,7 +20,13 @@ import {
   collectGroupPorts,
   selectGroupStopTargets,
 } from "@/lib/apps/group-stop";
-import type { CloseAppResponse, RunningApp } from "@/lib/apps/types";
+import { appStopKey } from "@/lib/apps/pending-stops";
+import {
+  formatFreedPorts,
+  requestAppStop,
+  summarizeStopResults,
+} from "@/lib/apps/stop-client";
+import type { RunningApp } from "@/lib/apps/types";
 
 interface GroupStopActionsProps {
   apps: RunningApp[];
@@ -28,8 +34,8 @@ interface GroupStopActionsProps {
 }
 
 export function GroupStopActions({ apps, onStopped }: GroupStopActionsProps) {
-  const [open, setOpen] = useState(false);
-  const [stopping, setStopping] = useState(false);
+  const { isStopping, track } = useStopTasks();
+  const stopping = apps.some((app) => isStopping(appStopKey(app.id)));
 
   const targets = selectGroupStopTargets(apps);
   const ports = collectGroupPorts(apps);
@@ -40,67 +46,30 @@ export function GroupStopActions({ apps, onStopped }: GroupStopActionsProps) {
   const projectName = representative?.projectName ?? "this project";
   const supervised = targets.find((app) => app.supervision.kind === "supervised");
 
+  // Runs after the dialog has closed; must not depend on this row staying mounted.
   async function stopAll() {
-    if (targets.length === 0) {
-      return;
+    const summary = summarizeStopResults(
+      await Promise.all(targets.map((app) => requestAppStop(app.id))),
+    );
+
+    if (summary.succeeded > 0) {
+      toast.success(
+        summary.failed === 0
+          ? (summary.firstSuccessMessage ??
+              (isSupervisedStack
+                ? `${projectName}'s managed development stack stopped successfully.`
+                : `${projectName} stopped successfully.`))
+          : `Stopped ${summary.succeeded} of ${targets.length} process trees for ${projectName}.`,
+        { description: formatFreedPorts(summary.releasedPorts) },
+      );
+      onStopped();
     }
 
-    setStopping(true);
-
-    try {
-      const results = await Promise.all(
-        targets.map(async (app) => {
-          const response = await fetch("/api/apps/close", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ id: app.id }),
-          });
-          const payload = (await response.json()) as Partial<CloseAppResponse> & {
-            message?: string;
-          };
-
-          return { response, payload, app };
-        }),
-      );
-
-      const failures = results.filter(
-        ({ response, payload }) => !response.ok || !payload.stopped,
-      );
-
-      if (failures.length > 0) {
-        const first = failures[0];
-        throw new Error(
-          first.payload.message ?? "Windows could not stop this stack.",
-        );
-      }
-
-      const releasedPorts = [
-        ...new Set(
-          results.flatMap(({ payload }) => payload.releasedPorts ?? []),
-        ),
-      ].sort((a, b) => a - b);
-
-      const successMessage =
-        results.find(({ payload }) => payload.message)?.payload.message ??
-        (isSupervisedStack
-          ? `${projectName}'s managed development stack stopped successfully.`
-          : `${projectName} stopped successfully.`);
-
-      toast.success(successMessage, {
-        description:
-          releasedPorts.length > 0
-            ? `Freed ${releasedPorts.map((port) => `:${port}`).join(", ")}`
-            : undefined,
-      });
-      setOpen(false);
-      onStopped();
-    } catch (error) {
+    if (summary.failed > 0) {
       toast.error("Could not stop the stack", {
         description:
-          error instanceof Error ? error.message : "The stop request failed.",
+          summary.firstFailureMessage ?? "Windows could not stop this stack.",
       });
-    } finally {
-      setStopping(false);
     }
   }
 
@@ -110,15 +79,21 @@ export function GroupStopActions({ apps, onStopped }: GroupStopActionsProps) {
 
   return (
     <div className="flex items-center justify-end gap-2">
-      <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialog>
         <AlertDialogTrigger asChild>
           <Button
             size="sm"
             variant="destructive"
-            aria-label={`Stop all listeners for ${projectName}`}
+            disabled={stopping}
+            aria-busy={stopping}
+            aria-label={`${stopping ? "Stopping" : "Stop"} all listeners for ${projectName}`}
           >
-            <Square data-icon="inline-start" />
-            Stop all
+            {stopping ? (
+              <LoaderCircle className="animate-spin" data-icon="inline-start" />
+            ) : (
+              <Square data-icon="inline-start" />
+            )}
+            {stopping ? "Stopping…" : "Stop all"}
           </Button>
         </AlertDialogTrigger>
         <AlertDialogContent>
@@ -152,25 +127,20 @@ export function GroupStopActions({ apps, onStopped }: GroupStopActionsProps) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={stopping}>Keep running</AlertDialogCancel>
+            <AlertDialogCancel>Keep running</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              disabled={stopping}
-              onClick={(event) => {
-                event.preventDefault();
-                void stopAll();
-              }}
+              disabled={targets.length === 0}
+              onClick={() =>
+                // Mark every app in the group: a supervised stop takes the siblings down too.
+                void track(
+                  apps.map((app) => appStopKey(app.id)),
+                  stopAll,
+                )
+              }
             >
-              {stopping ? (
-                <LoaderCircle className="animate-spin" data-icon="inline-start" />
-              ) : (
-                <Square data-icon="inline-start" />
-              )}
-              {stopping
-                ? "Stopping…"
-                : isSupervisedStack
-                  ? "Stop managed stack"
-                  : "Stop all"}
+              <Square data-icon="inline-start" />
+              {isSupervisedStack ? "Stop managed stack" : "Stop all"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

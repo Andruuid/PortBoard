@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import { CircleSlash2, ExternalLink, LoaderCircle, Square } from "lucide-react";
 import { toast } from "sonner";
 
+import { useStopTasks } from "@/components/stop-tasks-provider";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,7 +16,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import type { CloseAppResponse, RunningApp } from "@/lib/apps/types";
+import { appStopKey } from "@/lib/apps/pending-stops";
+import { formatFreedPorts, requestAppStop } from "@/lib/apps/stop-client";
+import type { RunningApp } from "@/lib/apps/types";
 
 interface AppActionsProps {
   app: RunningApp;
@@ -24,44 +26,26 @@ interface AppActionsProps {
 }
 
 export function AppActions({ app, onStopped }: AppActionsProps) {
-  const [open, setOpen] = useState(false);
-  const [stopping, setStopping] = useState(false);
+  const { isStopping, track } = useStopTasks();
+  const stopping = isStopping(appStopKey(app.id));
   const isSupervised = app.supervision.kind === "supervised";
   const destructiveLabel = isSupervised ? "Stop stack" : "Close";
 
+  // Runs after the dialog has closed; must not depend on this row staying mounted.
   async function stopApp() {
-    setStopping(true);
+    const { ok, payload } = await requestAppStop(app.id);
 
-    try {
-      const response = await fetch("/api/apps/close", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: app.id }),
-      });
-      const payload = (await response.json()) as Partial<CloseAppResponse> & {
-        message?: string;
-      };
-
-      if (!response.ok || !payload.stopped) {
-        throw new Error(payload.message ?? "Windows could not stop this app.");
-      }
-
-      toast.success(payload.message ?? `${app.projectName} stopped.`, {
-        description:
-          payload.releasedPorts && payload.releasedPorts.length > 0
-            ? `Freed ${payload.releasedPorts.map((port) => `:${port}`).join(", ")}`
-            : undefined,
-      });
-      setOpen(false);
-      onStopped();
-    } catch (error) {
+    if (!ok) {
       toast.error(isSupervised ? "Could not stop the stack" : "Could not close the app", {
-        description:
-          error instanceof Error ? error.message : "The stop request failed.",
+        description: payload.message ?? "Windows could not stop this app.",
       });
-    } finally {
-      setStopping(false);
+      return;
     }
+
+    toast.success(payload.message ?? `${app.projectName} stopped.`, {
+      description: formatFreedPorts(payload.releasedPorts ?? []),
+    });
+    onStopped();
   }
 
   return (
@@ -91,15 +75,21 @@ export function AppActions({ app, onStopped }: AppActionsProps) {
         </Button>
       )}
 
-      <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialog>
         <AlertDialogTrigger asChild>
           <Button
             size="sm"
             variant="destructive"
-            aria-label={`${destructiveLabel} ${app.projectName} on port ${app.port}`}
+            disabled={stopping}
+            aria-busy={stopping}
+            aria-label={`${stopping ? "Stopping" : destructiveLabel} ${app.projectName} on port ${app.port}`}
           >
-            <Square data-icon="inline-start" />
-            {destructiveLabel}
+            {stopping ? (
+              <LoaderCircle className="animate-spin" data-icon="inline-start" />
+            ) : (
+              <Square data-icon="inline-start" />
+            )}
+            {stopping ? "Stopping…" : destructiveLabel}
           </Button>
         </AlertDialogTrigger>
         <AlertDialogContent>
@@ -128,25 +118,13 @@ export function AppActions({ app, onStopped }: AppActionsProps) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={stopping}>Keep running</AlertDialogCancel>
+            <AlertDialogCancel>Keep running</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              disabled={stopping}
-              onClick={(event) => {
-                event.preventDefault();
-                void stopApp();
-              }}
+              onClick={() => void track([appStopKey(app.id)], stopApp)}
             >
-              {stopping ? (
-                <LoaderCircle className="animate-spin" data-icon="inline-start" />
-              ) : (
-                <Square data-icon="inline-start" />
-              )}
-              {stopping
-                ? "Stopping…"
-                : isSupervised
-                  ? "Stop managed stack"
-                  : "Stop app"}
+              <Square data-icon="inline-start" />
+              {isSupervised ? "Stop managed stack" : "Stop app"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

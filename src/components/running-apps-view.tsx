@@ -6,6 +6,7 @@ import {
   Folder,
   GitBranch,
   Layers3,
+  LoaderCircle,
   Radio,
   ServerOff,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import { GroupStopActions } from "@/components/group-stop-actions";
 import { PortRoleBadge } from "@/components/port-role-badge";
 import { RunningAppCard } from "@/components/running-app-card";
 import { RuntimeBadge } from "@/components/runtime-badge";
+import { useStopTasks } from "@/components/stop-tasks-provider";
 import { SupervisionBadge } from "@/components/supervision-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,6 +32,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { folderDisplayName } from "@/lib/apps/folder-name";
+import { appStopKey } from "@/lib/apps/pending-stops";
 import type { RunningApp } from "@/lib/apps/types";
 
 interface RunningAppsViewProps {
@@ -86,6 +89,18 @@ export function groupRunningApps(apps: RunningApp[]): RunningAppGroup[] {
     });
 }
 
+function stoppingCellClass(stopping: boolean): string {
+  return stopping ? "opacity-50 transition-opacity" : "transition-opacity";
+}
+
+function StatusIcon({ stopping }: { stopping: boolean }) {
+  return stopping ? (
+    <LoaderCircle className="size-3.5 animate-spin text-amber-300" aria-hidden="true" />
+  ) : (
+    <Radio className="size-3.5 text-emerald-400" aria-hidden="true" />
+  );
+}
+
 function RunningAppsSkeleton() {
   return (
     <Card className="border-border/80 bg-card/90 py-0">
@@ -129,21 +144,25 @@ function RunningAppRow({
   grouped?: boolean;
   onStopped: () => void;
 }) {
+  const { isStopping } = useStopTasks();
+  const stopping = isStopping(appStopKey(app.id));
+  const dim = stoppingCellClass(stopping);
+
   return (
-    <TableRow className="group border-border/60 bg-background/20">
-      <TableCell className={grouped ? "pl-10" : "pl-5"}>
+    <TableRow className="group border-border/60 bg-background/20" aria-busy={stopping}>
+      <TableCell className={`${grouped ? "pl-10" : "pl-5"} ${dim}`}>
         <span className="block max-w-48 truncate font-medium" title={folderDisplayName(app.projectRoot)}>
           {folderDisplayName(app.projectRoot)}
         </span>
       </TableCell>
       <TableCell>
         <div className="flex flex-wrap items-center gap-2 font-mono text-base font-semibold text-primary">
-          <Radio className="size-3.5 text-emerald-400" aria-hidden="true" />
+          <StatusIcon stopping={stopping} />
           :{app.port}
           <PortRoleBadge portInfo={app.portInfo} />
         </div>
       </TableCell>
-      <TableCell>
+      <TableCell className={dim}>
         <div className="flex max-w-64 items-center gap-2">
           <span className="truncate font-medium" title={app.projectName}>
             {app.projectName}
@@ -171,7 +190,7 @@ function RunningAppRow({
           {app.portInfo.description}
         </span>
       </TableCell>
-      <TableCell>
+      <TableCell className={dim}>
         <div className="flex max-w-[34rem] items-center gap-2 text-xs text-muted-foreground">
           <Folder className="size-3.5 shrink-0" aria-hidden="true" />
           <span className="truncate font-mono" title={app.projectRoot ?? "Unavailable"}>
@@ -179,7 +198,7 @@ function RunningAppRow({
           </span>
         </div>
       </TableCell>
-      <TableCell>
+      <TableCell className={dim}>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <GitBranch className="size-3.5" aria-hidden="true" />
           <span
@@ -201,6 +220,7 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
     () => new Set(),
   );
+  const { isStopping } = useStopTasks();
 
   if (apps === null) {
     return <RunningAppsSkeleton />;
@@ -256,11 +276,18 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
                 const primaryApp = group.apps.find((app) => app.portInfo.isPrimary);
                 const runtimeKinds = [...new Set(group.apps.map((app) => app.runtime))];
                 const label = `${representative.projectName} (${group.apps.length} ports)`;
+                const groupStopping = group.apps.some((app) =>
+                  isStopping(appStopKey(app.id)),
+                );
+                const dim = stoppingCellClass(groupStopping);
 
                 return (
                   <Fragment key={group.key}>
-                    <TableRow className="border-border/70 bg-muted/20 hover:bg-muted/30">
-                      <TableCell className="pl-5">
+                    <TableRow
+                      className="border-border/70 bg-muted/20 hover:bg-muted/30"
+                      aria-busy={groupStopping}
+                    >
+                      <TableCell className={`pl-5 ${dim}`}>
                         <span
                           className="block max-w-48 truncate font-medium"
                           title={folderDisplayName(group.projectRoot)}
@@ -284,6 +311,7 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
                             <ChevronRight data-icon="inline-start" />
                           )}
                           {group.apps.length} ports
+                          {groupStopping && <StatusIcon stopping />}
                         </Button>
                         <span className="block max-w-40 truncate font-mono text-[0.65rem] text-muted-foreground">
                           {group.apps.map((app) => `:${app.port}`).join(" · ")}
@@ -294,7 +322,7 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
                           </span>
                         )}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className={dim}>
                         <div className="flex max-w-64 items-center gap-2">
                           <Layers3 className="size-4 shrink-0 text-primary" aria-hidden="true" />
                           <span className="truncate font-medium" title={representative.projectName}>
@@ -312,7 +340,7 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
                             .join(" · ")}
                         </span>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className={dim}>
                         <div className="flex max-w-[34rem] items-center gap-2 text-xs text-muted-foreground">
                           <Folder className="size-3.5 shrink-0" aria-hidden="true" />
                           <span className="truncate font-mono" title={group.projectRoot ?? "Unavailable"}>
@@ -320,7 +348,7 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
                           </span>
                         </div>
                       </TableCell>
-                      <TableCell>
+                      <TableCell className={dim}>
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
                           <GitBranch className="size-3.5" aria-hidden="true" />
                           <span className="max-w-32 truncate font-mono">
@@ -365,15 +393,21 @@ export function RunningAppsView({ apps, onStopped }: RunningAppsViewProps) {
           const representative = group.apps[0];
           const primaryApp = group.apps.find((app) => app.portInfo.isPrimary);
           const label = `${representative.projectName} (${group.apps.length} ports)`;
+          const groupStopping = group.apps.some((app) =>
+            isStopping(appStopKey(app.id)),
+          );
 
           return (
             <div key={group.key} className="min-w-0 space-y-2">
-              <Card className="border-primary/20 bg-card/92 py-0 shadow-black/20">
+              <Card
+                className="border-primary/20 bg-card/92 py-0 shadow-black/20"
+                aria-busy={groupStopping}
+              >
                 <CardContent className="p-4">
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-auto min-w-0 w-full justify-start gap-3 whitespace-normal p-0 text-left hover:bg-transparent"
+                    className={`h-auto min-w-0 w-full justify-start gap-3 whitespace-normal p-0 text-left hover:bg-transparent ${stoppingCellClass(groupStopping)}`}
                     aria-expanded={expanded}
                     aria-label={`${expanded ? "Collapse" : "Expand"} ${label}`}
                     onClick={() => toggleGroup(group.key)}
